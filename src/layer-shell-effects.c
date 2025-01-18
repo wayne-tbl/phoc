@@ -667,7 +667,7 @@ alpha_surface_handle_commit (struct wl_listener *listener, void *data)
   if (alpha_surface->current == alpha_surface->pending)
     return;
 
-  alpha_surface->current  = alpha_surface->pending;
+  alpha_surface->current = alpha_surface->pending;
   phoc_layer_surface_set_alpha (layer_surface, alpha_surface->current);
 
   output = phoc_layer_surface_get_output (layer_surface);
@@ -796,6 +796,7 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
                                 struct wl_resource *layer_surface_resource)
 {
   PhocLayerShellEffects *self;
+  PhocLayerSurface *layer_surface;
   g_autofree PhocAlphaLayerSurface *alpha_surface = NULL;
   struct wlr_surface *wlr_surface;
   struct wlr_layer_surface_v1 *wlr_layer_surface;
@@ -833,8 +834,11 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
     return;
   }
 
-  g_assert (PHOC_IS_LAYER_SURFACE (wlr_layer_surface->data));
-  alpha_surface->layer_surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
+  layer_surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
+  g_assert (PHOC_IS_LAYER_SURFACE (layer_surface));
+  alpha_surface->layer_surface = layer_surface;
+  alpha_surface->current = phoc_layer_surface_get_alpha (layer_surface);
+  alpha_surface->pending = alpha_surface->current;
 
   alpha_surface->surface_handle_commit.notify = alpha_surface_handle_commit;
   wl_signal_add (&wlr_surface->events.commit, &alpha_surface->surface_handle_commit);
