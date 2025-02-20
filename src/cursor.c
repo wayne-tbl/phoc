@@ -430,11 +430,11 @@ send_pointer_motion (PhocSeat           *seat,
 }
 
 static void
-send_pointer_button (PhocSeat             *seat,
-                     struct wlr_surface   *surface,
-                     uint32_t              time,
-                     uint32_t              button,
-                     enum wlr_button_state state)
+send_pointer_button (PhocSeat                    *seat,
+                     struct wlr_surface          *surface,
+                     uint32_t                     time,
+                     uint32_t                     button,
+                     enum wl_pointer_button_state state)
 {
   uint32_t serial;
 
@@ -450,20 +450,28 @@ send_pointer_button (PhocSeat             *seat,
 
 
 static void
-send_pointer_axis (PhocSeat                 *seat,
-                   struct wlr_surface       *surface,
-                   uint32_t                  time,
-                   enum wlr_axis_orientation orientation,
-                   double                    value,
-                   int32_t                   value_discrete,
-                   enum wlr_axis_source      source)
+send_pointer_axis (PhocSeat                      *seat,
+                   struct wlr_surface            *surface,
+                   struct wlr_pointer_axis_event *event)
 {
   if (should_ignore_pointer_grab (seat, surface)) {
-    wlr_seat_pointer_send_axis (seat->seat, time, orientation, value, value_discrete, source);
+    wlr_seat_pointer_send_axis (seat->seat,
+                                event->time_msec,
+                                event->orientation,
+                                event->delta,
+                                event->delta_discrete,
+                                event->source,
+                                event->relative_direction);
     return;
   }
 
-  wlr_seat_pointer_notify_axis (seat->seat, time, orientation, value, value_discrete, source);
+  wlr_seat_pointer_notify_axis (seat->seat,
+                                event->time_msec,
+                                event->orientation,
+                                event->delta,
+                                event->delta_discrete,
+                                event->source,
+                                event->relative_direction);
 }
 
 
@@ -489,8 +497,8 @@ send_touch_down (PhocSeat                    *seat,
     return;
   }
 
-  serial =  wlr_seat_touch_notify_down (seat->seat, surface, event->time_msec,
-                                        event->touch_id, sx, sy);
+  serial = wlr_seat_touch_notify_down (seat->seat, surface, event->time_msec,
+                                       event->touch_id, sx, sy);
   phoc_seat_update_last_touch_serial (seat, serial);
 }
 
@@ -514,8 +522,7 @@ send_touch_motion (PhocSeat                      *seat,
     return;
   }
 
-  wlr_seat_touch_notify_motion (seat->seat, event->time_msec,
-                                event->touch_id, sx, sy);
+  wlr_seat_touch_notify_motion (seat->seat, event->time_msec, event->touch_id, sx, sy);
 }
 
 
@@ -524,52 +531,60 @@ send_touch_up (PhocSeat                  *seat,
                struct wlr_surface        *surface,
                struct wlr_touch_up_event *event)
 {
+  uint32_t serial;
+
   if (should_ignore_touch_grab (seat, surface)) {
     // currently wlr_seat_touch_send_* functions don't work, so temporarily
     // restore grab to the default one and use notify_* instead
     // See https://gitlab.freedesktop.org/wlroots/wlroots/-/issues/3478
     struct wlr_seat_touch_grab *grab = seat->seat->touch_state.grab;
     seat->seat->touch_state.grab = seat->seat->touch_state.default_grab;
-    wlr_seat_touch_notify_up (seat->seat, event->time_msec, event->touch_id);
+    serial = wlr_seat_touch_notify_up (seat->seat, event->time_msec, event->touch_id);
+    phoc_seat_update_last_touch_serial (seat, serial);
     seat->seat->touch_state.grab = grab;
     return;
   }
 
-  wlr_seat_touch_notify_up (seat->seat, event->time_msec, event->touch_id);
+  serial = wlr_seat_touch_notify_up (seat->seat, event->time_msec, event->touch_id);
+  phoc_seat_update_last_touch_serial (seat, serial);
 }
 
 
 static void
-send_touch_cancel (PhocSeat                  *seat,
-                   struct wlr_surface        *surface)
+send_touch_cancel (PhocSeat *seat, struct wlr_surface *surface)
 {
+  struct wl_client *client = wl_resource_get_client (surface->resource);
+  struct wlr_seat_client *seat_client;
+
+  seat_client = wlr_seat_client_for_wl_client (seat->seat, client);
+  if (!seat_client)
+    return;
+
   if (should_ignore_touch_grab (seat, surface)) {
-    // currently, wlr_seat_touch_send_* functions don't work, so temporarily
-    // restore grab to the default one and use notify_* instead
-    // See https://gitlab.freedesktop.org/wlroots/wlroots/-/issues/3478
+    /* currently, wlr_seat_touch_send_* functions don't work, so temporarily
+     * restore grab to the default one and use notify_* instead
+     * See https://gitlab.freedesktop.org/wlroots/wlroots/-/issues/3478 */
     struct wlr_seat_touch_grab *grab = seat->seat->touch_state.grab;
     seat->seat->touch_state.grab = seat->seat->touch_state.default_grab;
-    wlr_seat_touch_notify_cancel (seat->seat, surface);
+    wlr_seat_touch_notify_cancel (seat->seat, seat_client);
     seat->seat->touch_state.grab = grab;
     return;
   }
 
-  wlr_seat_touch_notify_cancel (seat->seat, surface);
+  wlr_seat_touch_notify_cancel (seat->seat, seat_client);
 }
 
 
 static PhocTouchPoint *
 phoc_cursor_add_touch_point (PhocCursor *self, struct wlr_touch_down_event *event)
 {
-  PhocTouchPoint *touch_point = g_new0 (PhocTouchPoint, 1);
+  PhocTouchPoint *touch_point;
   PhocCursorPrivate *priv = phoc_cursor_get_instance_private (self);
   double lx, ly;
 
   wlr_cursor_absolute_to_layout_coords (self->cursor, &event->touch->base,
                                         event->x, event->y, &lx, &ly);
-  touch_point->touch_id = event->touch_id;
-  touch_point->lx = lx;
-  touch_point->ly = ly;
+  touch_point = phoc_touch_point_new (event->touch_id, lx, ly);
 
   if (!g_hash_table_insert (priv->touch_points,
                             GINT_TO_POINTER (event->touch_id),
@@ -595,8 +610,7 @@ phoc_cursor_update_touch_point (PhocCursor *self, struct wlr_touch_motion_event 
   }
   wlr_cursor_absolute_to_layout_coords (self->cursor, &event->touch->base,
                                         event->x, event->y, &lx, &ly);
-  touch_point->lx = lx;
-  touch_point->ly = ly;
+  phoc_touch_point_update (touch_point, lx, ly);
 
   return touch_point;
 }
@@ -1153,7 +1167,7 @@ phoc_cursor_init (PhocCursor *self)
   priv->touch_points = g_hash_table_new_full (g_direct_hash,
                                               g_direct_equal,
                                               NULL,
-                                              g_free);
+                                              (GDestroyNotify)phoc_touch_point_destroy);
   /*
    * Drag gesture starting at the current cursor position
    */
@@ -1364,7 +1378,7 @@ phoc_cursor_pointer_motion (PhocCursor              *self,
     priv->has_pointer_motion = TRUE;
     phoc_cursor_show (self);
   }
-  phoc_desktop_notify_activity (desktop, self->seat);
+  phoc_seat_notify_activity (self->seat);
 
   wlr_relative_pointer_manager_v1_send_relative_motion (desktop->relative_pointer_manager,
                                                         self->seat->seat,
@@ -1438,13 +1452,12 @@ handle_pointer_motion_absolute (struct wl_listener *listener, void *data)
 static void
 handle_pointer_button (struct wl_listener *listener, void *data)
 {
-  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
   PhocCursor *self = wl_container_of (listener, self, button);
   struct wlr_pointer_button_event *event = data;
   PhocEventType type;
   bool is_touch = event->pointer->base.type == WLR_INPUT_DEVICE_TOUCH;
 
-  phoc_desktop_notify_activity (desktop, self->seat);
+  phoc_seat_notify_activity (self->seat);
   g_debug ("%s %d is_touch: %d", __func__, __LINE__, is_touch);
   if (!is_touch) {
     type = event->state ? PHOC_EVENT_BUTTON_PRESS : PHOC_EVENT_BUTTON_RELEASE;
@@ -1479,7 +1492,6 @@ phoc_cursor_handle_event (PhocCursor   *self,
 static void
 handle_pointer_axis (struct wl_listener *listener, void *data)
 {
-  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
   PhocCursor *self = wl_container_of (listener, self, axis);
   struct wlr_pointer_axis_event *event = data;
   PhocCursorPrivate *priv = phoc_cursor_get_instance_private (self);
@@ -1488,20 +1500,18 @@ handle_pointer_axis (struct wl_listener *listener, void *data)
     priv->has_pointer_motion = TRUE;
     phoc_cursor_show (self);
   }
-  phoc_desktop_notify_activity (desktop, self->seat);
+  phoc_seat_notify_activity (self->seat);
 
-  send_pointer_axis (self->seat, self->seat->seat->pointer_state.focused_surface, event->time_msec,
-                     event->orientation, event->delta, event->delta_discrete, event->source);
+  send_pointer_axis (self->seat, self->seat->seat->pointer_state.focused_surface, event);
 }
 
 
 static void
 handle_pointer_frame (struct wl_listener *listener, void *data)
 {
-  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
   PhocCursor *self = wl_container_of (listener, self, frame);
 
-  phoc_desktop_notify_activity (desktop, self->seat);
+  phoc_seat_notify_activity (self->seat);
   wlr_seat_pointer_notify_frame (self->seat->seat);
 
   // make sure to always send frame events when necessary even when bypassing seat grabs
@@ -1555,23 +1565,6 @@ phoc_cursor_handle_touch_down (PhocCursor                  *self,
 
     phoc_input_method_relay_im_submit (&seat->im_relay, surface);
   }
-
-  if (G_UNLIKELY (phoc_server_check_debug_flags (server, PHOC_SERVER_DEBUG_FLAG_TOUCH_POINTS))) {
-    PhocOutput *output;
-    wl_list_for_each (output, &desktop->outputs, link) {
-      if (wlr_output_layout_contains_point (desktop->layout, output->wlr_output, lx, ly)) {
-        double ox = lx, oy = ly;
-        wlr_output_layout_output_coords (desktop->layout, output->wlr_output, &ox, &oy);
-        struct wlr_box box = {
-          .x = ox,
-          .y = oy,
-          .width = 1,
-          .height = 1
-        };
-        wlr_damage_ring_add_box (&output->damage_ring, &box);
-      }
-    }
-  }
 }
 
 
@@ -1579,8 +1572,7 @@ void
 phoc_cursor_handle_touch_up (PhocCursor                *self,
                              struct wlr_touch_up_event *event)
 {
-  struct wlr_touch_point *point =
-    wlr_seat_touch_get_point (self->seat->seat, event->touch_id);
+  struct wlr_touch_point *point = wlr_seat_touch_get_point (self->seat->seat, event->touch_id);
   PhocTouchPoint *touch_point;
   PhocCursorPrivate *priv;
 
@@ -1682,6 +1674,7 @@ phoc_cursor_handle_touch_motion (PhocCursor                    *self,
           break;
         }
       }
+      g_assert (found);
     } else {
       PhocView *view = phoc_view_from_wlr_surface (root);
       if (view) {
@@ -2109,4 +2102,23 @@ phoc_cursor_configure_xcursor (PhocCursor *self)
 
   phoc_cursor_set_name (self, NULL, PHOC_XCURSOR_DEFAULT);
   wlr_cursor_warp (self->cursor, NULL, self->cursor->x, self->cursor->y);
+}
+
+/**
+ * phoc_cursor_get_touch_points:
+ * @self: The cursor
+ *
+ * Gets the touch points currently tracked by the cursor.
+ *
+ * Returns: (transfer none): The touch points
+ */
+GHashTable *
+phoc_cursor_get_touch_points (PhocCursor *self)
+{
+  PhocCursorPrivate *priv;
+
+  g_assert (PHOC_IS_CURSOR (self));
+  priv = phoc_cursor_get_instance_private (self);
+
+  return priv->touch_points;
 }

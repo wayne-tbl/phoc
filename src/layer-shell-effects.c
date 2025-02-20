@@ -312,6 +312,9 @@ handle_alpha_layer_surface_set_alpha (struct wl_client   *client,
   g_assert (alpha_surface);
   alpha = wl_fixed_to_double (alpha_f);
 
+  alpha = MIN (1.0, alpha);
+  alpha = MAX (0.0, alpha);
+
   g_debug ("Alpha Layer surface alpha for %p: alpha: %f", alpha_surface, alpha);
 
   if (alpha_surface->layer_surface == NULL)
@@ -346,12 +349,14 @@ handle_stacked_layer_surface_stack_above (struct wl_client   *client,
     wl_resource_post_error (resource,
                             ZPHOC_LAYER_SHELL_EFFECTS_V1_STACK_ERROR_INVALID_SURFACE,
                             "Layer surface not yet committed");
+    return;
   }
 
   if (!wlr_layer_surface->data) {
     wl_resource_post_error (resource,
                             ZPHOC_LAYER_SHELL_EFFECTS_V1_STACK_ERROR_INVALID_SURFACE,
                             "Layer surface not yet committed");
+    return;
   }
 
   stacked_surface->pending.surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
@@ -377,12 +382,14 @@ handle_stacked_layer_surface_stack_below (struct wl_client   *client,
     wl_resource_post_error (resource,
                             ZPHOC_LAYER_SHELL_EFFECTS_V1_STACK_ERROR_INVALID_SURFACE,
                             "Layer surface not yet committed");
+    return;
   }
 
   if (!wlr_layer_surface->data) {
     wl_resource_post_error (resource,
                             ZPHOC_LAYER_SHELL_EFFECTS_V1_STACK_ERROR_INVALID_SURFACE,
                             "Layer surface not yet committed");
+    return;
   }
 
   stacked_surface->pending.surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
@@ -560,6 +567,9 @@ alpha_layer_surface_handle_destroy (struct wl_listener *listener, void *data)
 {
   PhocAlphaLayerSurface *alpha_surface = wl_container_of(listener, alpha_surface, layer_surface_handle_destroy);
 
+  wl_list_remove (&alpha_surface->surface_handle_commit.link);
+  wl_list_remove (&alpha_surface->layer_surface_handle_destroy.link);
+
   /* The layer-surface is unusable for us now */
   alpha_surface->layer_surface = NULL;
 }
@@ -577,6 +587,9 @@ draggable_layer_surface_handle_destroy (struct wl_listener *listener, void *data
   g_hash_table_remove (layer_shell_effects->drag_surfaces_by_layer_surface,
                        drag_surface->layer_surface);
 
+  wl_list_remove (&drag_surface->surface_handle_commit.link);
+  wl_list_remove (&drag_surface->layer_surface_handle_destroy.link);
+
   /* The layer-surface is unusable for us now */
   drag_surface->layer_surface = NULL;
 }
@@ -588,6 +601,9 @@ stacked_layer_surface_handle_destroy (struct wl_listener *listener, void *data)
   PhocStackedLayerSurface *stacked_surface;
 
   stacked_surface = wl_container_of (listener, stacked_surface, layer_surface_handle_destroy);
+
+  wl_list_remove (&stacked_surface->surface_handle_commit.link);
+  wl_list_remove (&stacked_surface->layer_surface_handle_destroy.link);
 
   /* The layer-surface is unusable for us now */
   stacked_surface->layer_surface = NULL;
@@ -602,6 +618,8 @@ stacked_target_layer_surface_handle_destroy (struct wl_listener *listener, void 
   PhocStackedLayerSurface *stacked_surface;
 
   stacked_surface = wl_container_of (listener, stacked_surface, target_layer_surface_handle_destroy);
+
+  wl_list_remove (&stacked_surface->target_layer_surface_handle_destroy.link);
 
   /* The layer-surface is unusable for us now */
   stacked_surface->current.surface = NULL;
@@ -664,7 +682,7 @@ alpha_surface_handle_commit (struct wl_listener *listener, void *data)
   if (alpha_surface->current == alpha_surface->pending)
     return;
 
-  alpha_surface->current  = alpha_surface->pending;
+  alpha_surface->current = alpha_surface->pending;
   phoc_layer_surface_set_alpha (layer_surface, alpha_surface->current);
 
   output = phoc_layer_surface_get_output (layer_surface);
@@ -793,6 +811,7 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
                                 struct wl_resource *layer_surface_resource)
 {
   PhocLayerShellEffects *self;
+  PhocLayerSurface *layer_surface;
   g_autofree PhocAlphaLayerSurface *alpha_surface = NULL;
   struct wlr_surface *wlr_surface;
   struct wlr_layer_surface_v1 *wlr_layer_surface;
@@ -804,6 +823,13 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
   wlr_surface = wlr_layer_surface->surface;
   g_assert (wlr_surface);
 
+  if (!wlr_layer_surface->data) {
+    wl_resource_post_error (layer_shell_effects_resource,
+                            ZPHOC_LAYER_SHELL_EFFECTS_V1_ERROR_BAD_SURFACE,
+                            "Layer surface not yet committed");
+    return;
+  }
+
   alpha_surface = g_new0 (PhocAlphaLayerSurface, 1);
 
   version = wl_resource_get_version (layer_shell_effects_resource);
@@ -813,6 +839,7 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
                                                 version,
                                                 id);
   if (alpha_surface->resource == NULL) {
+    g_free (alpha_surface);
     wl_client_post_no_memory(client);
     return;
   }
@@ -823,15 +850,11 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
                                   alpha_surface,
                                   alpha_layer_surface_handle_resource_destroy);
 
-  if (!wlr_layer_surface->data) {
-    wl_resource_post_error (layer_shell_effects_resource,
-                            ZPHOC_LAYER_SHELL_EFFECTS_V1_ERROR_BAD_SURFACE,
-                            "Layer surface not yet committed");
-    return;
-  }
-
-  g_assert (PHOC_IS_LAYER_SURFACE (wlr_layer_surface->data));
-  alpha_surface->layer_surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
+  layer_surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
+  g_assert (PHOC_IS_LAYER_SURFACE (layer_surface));
+  alpha_surface->layer_surface = layer_surface;
+  alpha_surface->current = phoc_layer_surface_get_alpha (layer_surface);
+  alpha_surface->pending = alpha_surface->current;
 
   alpha_surface->surface_handle_commit.notify = alpha_surface_handle_commit;
   wl_signal_add (&wlr_surface->events.commit, &alpha_surface->surface_handle_commit);
@@ -861,6 +884,13 @@ handle_get_stacked_layer_surface (struct wl_client   *client,
   wlr_surface = wlr_layer_surface->surface;
   g_assert (wlr_surface);
 
+  if (!wlr_layer_surface->data) {
+    wl_resource_post_error (layer_shell_effects_resource,
+                            ZPHOC_LAYER_SHELL_EFFECTS_V1_ERROR_BAD_SURFACE,
+                            "Layer surface not yet committed");
+    return;
+  }
+
   stacked_surface = g_new0 (PhocStackedLayerSurface, 1);
 
   version = wl_resource_get_version (layer_shell_effects_resource);
@@ -870,6 +900,7 @@ handle_get_stacked_layer_surface (struct wl_client   *client,
                                                  version,
                                                  id);
   if (stacked_surface->resource == NULL) {
+    g_free (stacked_surface);
     wl_client_post_no_memory(client);
     return;
   }
@@ -879,12 +910,6 @@ handle_get_stacked_layer_surface (struct wl_client   *client,
                                   &stacked_layer_surface_v1_impl,
                                   stacked_surface,
                                   stacked_layer_surface_handle_resource_destroy);
-  if (!wlr_layer_surface->data) {
-    wl_resource_post_error (layer_shell_effects_resource,
-                            ZPHOC_LAYER_SHELL_EFFECTS_V1_ERROR_BAD_SURFACE,
-                            "Layer surface not yet committed");
-    return;
-  }
 
   g_assert (PHOC_IS_LAYER_SURFACE (wlr_layer_surface->data));
 
@@ -1003,6 +1028,7 @@ static void
 apply_margin (PhocDraggableLayerSurface *drag_surface, double margin)
 {
   struct wlr_layer_surface_v1 *wlr_layer_surface = drag_surface->layer_surface->layer_surface;
+  int exclusive = wlr_layer_surface->current.exclusive_zone;
 
   /* The client is not supposed to update margin or exclusive zone so
    * keep current and pending in sync */
@@ -1031,6 +1057,14 @@ apply_margin (PhocDraggableLayerSurface *drag_surface, double margin)
   wlr_layer_surface->pending.margin.left = wlr_layer_surface->current.margin.left;
   wlr_layer_surface->pending.margin.right = wlr_layer_surface->current.margin.right;
   wlr_layer_surface->pending.exclusive_zone = wlr_layer_surface->current.exclusive_zone;
+
+  /* Exclusive zone changes affect the surface ordering in a layer but not if both of them
+     are positive */
+  if (wlr_layer_surface->current.exclusive_zone != exclusive &&
+      (wlr_layer_surface->current.exclusive_zone <= 0 || exclusive <= 0)) {
+    PhocOutput *output = phoc_layer_surface_get_output (drag_surface->layer_surface);
+    phoc_output_set_layer_dirty (output, phoc_layer_surface_get_layer (drag_surface->layer_surface));
+  }
 }
 
 

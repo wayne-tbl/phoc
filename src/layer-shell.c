@@ -17,9 +17,11 @@
 #include "desktop.h"
 #include "layer-shell.h"
 #include "layer-shell-private.h"
+#include "layout-transaction.h"
 #include "output.h"
 #include "seat.h"
 #include "server.h"
+#include "surface.h"
 #include "utils.h"
 
 #include <glib.h>
@@ -78,7 +80,8 @@ apply_exclusive (struct wlr_box *usable_area,
       .margin = margin_right,
     },
   };
-  for (size_t i = 0; i < sizeof (edges) / sizeof (edges[0]); ++i) {
+
+  for (size_t i = 0; i < G_N_ELEMENTS (edges); ++i) {
     if ((anchor & edges[i].anchors) == edges[i].anchors && exclusive + edges[i].margin > 0) {
       if (edges[i].positive_axis)
         *edges[i].positive_axis += exclusive + edges[i].margin;
@@ -127,7 +130,7 @@ phoc_layer_shell_update_cursors (PhocLayerSurface *layer_surface, GSList *seats)
 }
 
 
-static void
+static gboolean
 arrange_layer (PhocOutput                     *output,
                GSList                         *seats, /* PhocSeat */
                enum zwlr_layer_shell_v1_layer  layer,
@@ -136,6 +139,7 @@ arrange_layer (PhocOutput                     *output,
 {
   PhocLayerSurface *layer_surface;
   struct wlr_box full_area = { 0 };
+  gboolean sent_configure = FALSE;
 
   g_assert (PHOC_IS_OUTPUT (output));
   wlr_output_effective_resolution (output->wlr_output, &full_area.width, &full_area.height);
@@ -159,7 +163,7 @@ arrange_layer (PhocOutput                     *output,
       .width = state->desired_width,
       .height = state->desired_height
     };
-    // Horizontal axis
+    /* Horizontal axis */
     const uint32_t both_horiz = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT
       | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
     if ((state->anchor & both_horiz) && box.width == 0) {
@@ -172,7 +176,7 @@ arrange_layer (PhocOutput                     *output,
     } else {
       box.x = bounds.x + ((bounds.width / 2) - (box.width / 2));
     }
-    // Vertical axis
+    /* Vertical axis */
     const uint32_t both_vert = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP
       | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
     if ((state->anchor & both_vert) && box.height == 0) {
@@ -185,7 +189,7 @@ arrange_layer (PhocOutput                     *output,
     } else {
       box.y = bounds.y + ((bounds.height / 2) - (box.height / 2));
     }
-    // Margin
+    /* Margin */
     if ((state->anchor & both_horiz) == both_horiz) {
       box.x += state->margin.left;
       box.width -= state->margin.left + state->margin.right;
@@ -210,7 +214,7 @@ arrange_layer (PhocOutput                     *output,
       continue;
     }
 
-    // Apply
+    /* Apply */
     struct wlr_box old_geo = layer_surface->geo;
     layer_surface->geo = box;
     if (wlr_layer_surface->surface->mapped) {
@@ -219,18 +223,21 @@ arrange_layer (PhocOutput                     *output,
                        state->margin.bottom, state->margin.left);
     }
 
-    if (box.width != old_geo.width || box.height != old_geo.height)
-      wlr_layer_surface_v1_configure (wlr_layer_surface, box.width, box.height);
+    if (box.width != old_geo.width || box.height != old_geo.height) {
+      phoc_layer_surface_send_configure (layer_surface);
+      sent_configure = TRUE;
+    }
 
-    // Having a cursor newly end up over the moved layer will not
-    // automatically send a motion event to the surface. The event needs to
-    // be synthesized.
-    // Only update layer surfaces which kept their size (and so buffers) the
-    // same, because those with resized buffers will be handled separately.
-
+    /* Having a cursor newly end up over the moved layer will not
+     * automatically send a motion event to the surface. The event needs to
+     * be synthesized.
+     * Only update layer surfaces which kept their size (and so buffers) the
+     * same, because those with resized buffers will be handled separately. */
     if (layer_surface->geo.x != old_geo.x || layer_surface->geo.y != old_geo.y)
       phoc_layer_shell_update_cursors (layer_surface, seats);
   }
+
+  return sent_configure;
 }
 
 /**
@@ -255,8 +262,16 @@ phoc_layer_shell_find_osk (PhocOutput *output)
   return NULL;
 }
 
-
-void
+/**
+ * phoc_layer_shell_arrange:
+ * @output: The output to arrange
+ *
+ * Arrange the layer surfaces on the given output.
+ *
+ * Returns: `TRUE` if at least one layer surface needs to change size
+ * and hence configure events were sent to the client.
+ */
+gboolean
 phoc_layer_shell_arrange (PhocOutput *output)
 {
   PhocServer *server = phoc_server_get_default ();
@@ -264,6 +279,7 @@ phoc_layer_shell_arrange (PhocOutput *output)
   PhocInput *input = phoc_server_get_input (server);
   struct wlr_box usable_area = { 0 };
   GSList *seats = phoc_input_get_seats (input);
+  gboolean usable_area_changed, sent_configure = FALSE;
   enum zwlr_layer_shell_v1_layer layers[] = {
     ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
     ZWLR_LAYER_SHELL_V1_LAYER_TOP,
@@ -278,20 +294,25 @@ phoc_layer_shell_arrange (PhocOutput *output)
   phoc_layer_shell_update_osk (output, FALSE);
 
   wlr_output_effective_resolution (output->wlr_output, &usable_area.width, &usable_area.height);
-  // Arrange exclusive surfaces from top->bottom
+  /* Arrange exclusive surfaces from top->bottom */
   for (size_t i = 0; i < G_N_ELEMENTS (layers); ++i)
-    arrange_layer (output, seats, layers[i], &usable_area, true);
-  output->usable_area = usable_area;
+    sent_configure |= arrange_layer (output, seats, layers[i], &usable_area, true);
 
-  for (GList *l = phoc_desktop_get_views (desktop)->head; l; l = l->next) {
-    PhocView *view = PHOC_VIEW (l->data);
+  usable_area_changed = memcmp (&output->usable_area, &usable_area, sizeof (output->usable_area));
+  if (usable_area_changed) {
+    g_debug ("Usable area changed, rearranging views");
+    output->usable_area = usable_area;
 
-    phoc_view_arrange (view, NULL, output->desktop->maximize);
+    for (GList *l = phoc_desktop_get_views (desktop)->head; l; l = l->next) {
+      PhocView *view = PHOC_VIEW (l->data);
+
+      phoc_view_arrange (view, NULL, output->desktop->maximize);
+    }
   }
 
-  // Arrange non-exlusive surfaces from top->bottom
+  /* Arrange non-exlusive surfaces from top->bottom */
   for (size_t i = 0; i < G_N_ELEMENTS (layers); ++i)
-    arrange_layer (output, seats, layers[i], &usable_area, false);
+    sent_configure |= arrange_layer (output, seats, layers[i], &usable_area, false);
 
   phoc_output_update_shell_reveal (output);
 
@@ -310,6 +331,8 @@ phoc_layer_shell_arrange (PhocOutput *output)
                  layer_surface->layer_surface->current.exclusive_zone);
     }
   }
+
+  return sent_configure;
 }
 
 
@@ -324,8 +347,8 @@ phoc_layer_shell_update_focus (void)
     ZWLR_LAYER_SHELL_V1_LAYER_TOP,
   };
   PhocLayerSurface *layer_surface, *topmost = NULL;
-  // Find topmost keyboard interactive layer, if such a layer exists
-  // TODO: Make layer surface focus per-output based on cursor position
+  /* Find topmost keyboard interactive layer, if such a layer exists */
+  /* TODO: Make layer surface focus per-output based on cursor position */
   PhocOutput *output;
   wl_list_for_each (output, &desktop->outputs, link) {
     for (size_t i = 0; i < G_N_ELEMENTS (layers_above_shell); ++i) {
@@ -376,6 +399,7 @@ phoc_layer_shell_update_focus (void)
 void
 phoc_layer_subsurface_destroy (PhocLayerSubsurface *subsurface)
 {
+  wl_list_remove (&subsurface->parent_commit.link);
   wl_list_remove (&subsurface->map.link);
   wl_list_remove (&subsurface->unmap.link);
   wl_list_remove (&subsurface->destroy.link);
@@ -403,8 +427,8 @@ phoc_layer_popup_unconstrain (PhocLayerPopup *popup)
 
   PhocOutput *output = phoc_layer_surface_get_output (layer);
 
-  // the output box expressed in the coordinate system of the toplevel parent
-  // of the popup
+  /* The output box expressed in the coordinate system of the toplevel
+   * parent of the popup */
   struct wlr_box output_toplevel_sx_box = {
     .x = -layer->geo.x,
     .y = -layer->geo.y,
@@ -682,6 +706,53 @@ subsurface_handle_destroy (struct wl_listener *listener, void *data)
   phoc_layer_subsurface_destroy (subsurface);
 }
 
+
+static void
+collect_damage_iter (struct wlr_surface *wlr_surface, int sx, int sy, gpointer data)
+{
+  PhocLayerSubsurface *subsurface = data;
+  struct wlr_subsurface *wlr_subsurface = subsurface->wlr_subsurface;
+  PhocSurface *surface = wlr_subsurface->parent->data;
+
+  if (!surface)
+    return;
+
+  phoc_surface_add_damage_box (surface, &(struct wlr_box) {
+      subsurface->previous.x - sx,
+      subsurface->previous.y - sy,
+      wlr_surface->previous.width,
+      wlr_surface->previous.height
+    });
+}
+
+
+static void
+subsurface_handle_parent_commit (struct wl_listener *listener, void *data)
+{
+  PhocLayerSubsurface *subsurface = wl_container_of (listener, subsurface, parent_commit);
+  struct wlr_subsurface *wlr_subsurface = subsurface->wlr_subsurface;
+  struct wlr_surface *wlr_surface = wlr_subsurface->surface;
+  gboolean moved, reordered;
+
+  moved = (subsurface->previous.x != wlr_subsurface->current.x ||
+           subsurface->previous.y != wlr_subsurface->current.y);
+
+  reordered = (subsurface->previous.prev != wlr_subsurface->current.link.prev ||
+               subsurface->previous.next != wlr_subsurface->current.link.next);
+
+  if (wlr_subsurface->surface->mapped && (moved || reordered))
+    wlr_surface_for_each_surface (wlr_surface, collect_damage_iter, subsurface);
+
+  subsurface->previous.x = wlr_subsurface->current.x;
+  subsurface->previous.y = wlr_subsurface->current.y;
+  subsurface->previous.prev = wlr_subsurface->current.link.prev;
+  subsurface->previous.next = wlr_subsurface->current.link.next;
+
+  if (wlr_subsurface->surface->mapped && (moved || reordered))
+    wlr_surface_for_each_surface (wlr_surface, collect_damage_iter, subsurface);
+}
+
+
 PhocLayerSubsurface *
 phoc_layer_subsurface_create (struct wlr_subsurface *wlr_subsurface)
 {
@@ -701,6 +772,9 @@ phoc_layer_subsurface_create (struct wlr_subsurface *wlr_subsurface)
   subsurface->commit.notify = subsurface_handle_commit;
   wl_signal_add (&wlr_subsurface->surface->events.commit, &subsurface->commit);
 
+  subsurface->parent_commit.notify = subsurface_handle_parent_commit;
+  wl_signal_add (&subsurface->wlr_subsurface->parent->events.commit, &subsurface->parent_commit);
+
   wl_list_init (&subsurface->subsurfaces);
   wl_list_init (&subsurface->link);
 
@@ -713,21 +787,11 @@ phoc_handle_layer_shell_surface (struct wl_listener *listener, void *data)
 {
   struct wlr_layer_surface_v1 *wlr_layer_surface = data;
   PhocDesktop *desktop = wl_container_of (listener, desktop, layer_shell_surface);
-
-  g_debug ("new layer surface: namespace %s layer %d anchor %d "
-           "size %dx%d margin %d,%d,%d,%d",
-           wlr_layer_surface->namespace, wlr_layer_surface->pending.layer,
-           wlr_layer_surface->pending.anchor,
-           wlr_layer_surface->pending.desired_width,
-           wlr_layer_surface->pending.desired_height,
-           wlr_layer_surface->pending.margin.top,
-           wlr_layer_surface->pending.margin.right,
-           wlr_layer_surface->pending.margin.bottom,
-           wlr_layer_surface->pending.margin.left);
+  PhocLayerSurface *self;
 
   if (!wlr_layer_surface->output) {
     PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
-    g_assert (PHOC_IS_SEAT (seat)); // Technically speaking we should handle this case
+    g_assert (PHOC_IS_SEAT (seat)); /* Technically speaking we should handle this case */
     PhocCursor *cursor = phoc_seat_get_cursor (seat);
     struct wlr_output *output = wlr_output_layout_output_at (desktop->layout,
                                                              cursor->cursor->x,
@@ -744,18 +808,30 @@ phoc_handle_layer_shell_surface (struct wl_listener *listener, void *data)
     }
   }
 
-  phoc_layer_surface_new (wlr_layer_surface);
+  self = phoc_layer_surface_new (wlr_layer_surface);
   PhocOutput *output = PHOC_OUTPUT (wlr_layer_surface->output->data);
 
-  // Temporarily set the layer's current state to pending
-  // So that we can easily arrange it
+  /* Temporarily set the layer's current state to pending so that we
+   * can easily arrange it */
   struct wlr_layer_surface_v1_state old_state = wlr_layer_surface->current;
   wlr_layer_surface->current = wlr_layer_surface->pending;
 
   phoc_layer_shell_arrange (output);
+  phoc_output_set_layer_dirty (output, wlr_layer_surface->pending.layer);
   phoc_layer_shell_update_focus ();
 
   wlr_layer_surface->current = old_state;
+
+  g_debug ("New layer surface %p: namespace %s layer %d anchor %d size %dx%d margin %d,%d,%d,%d",
+           self,
+           wlr_layer_surface->namespace, wlr_layer_surface->pending.layer,
+           wlr_layer_surface->pending.anchor,
+           wlr_layer_surface->pending.desired_width,
+           wlr_layer_surface->pending.desired_height,
+           wlr_layer_surface->pending.margin.top,
+           wlr_layer_surface->pending.margin.right,
+           wlr_layer_surface->pending.margin.bottom,
+           wlr_layer_surface->pending.margin.left);
 }
 
 /**

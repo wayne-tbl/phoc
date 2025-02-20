@@ -13,6 +13,7 @@
 #include "layer-shell-private.h"
 #include "layer-surface.h"
 #include "layer-shell.h"
+#include "layout-transaction.h"
 #include "output.h"
 #include "server.h"
 #include "utils.h"
@@ -98,53 +99,67 @@ handle_surface_commit (struct wl_listener *listener, void *data)
   PhocLayerSurface *self = wl_container_of (listener, self, surface_commit);
   struct wlr_layer_surface_v1 *wlr_layer_surface = self->layer_surface;
   struct wlr_output *wlr_output = wlr_layer_surface->output;
+  gboolean exclusive_zone_changed;
 
-  if (wlr_output != NULL) {
-    PhocOutput *output = PHOC_OUTPUT (wlr_output->data);
-    struct wlr_box old_geo = self->geo;
+  if (!wlr_output)
+    return;
 
-    bool layer_changed = false;
-    if (wlr_layer_surface->current.committed != 0) {
-      layer_changed = self->layer != wlr_layer_surface->current.layer;
+  PhocOutput *output = PHOC_OUTPUT (wlr_output->data);
+  struct wlr_box old_geo = self->geo;
 
+  bool layer_changed = false;
+  if (wlr_layer_surface->current.committed != 0) {
+    layer_changed = self->layer != wlr_layer_surface->current.layer;
+
+    /* Invalidate the layer the surface previously belonged to */
+    if (layer_changed)
       phoc_output_set_layer_dirty (output, self->layer);
 
-      self->layer = wlr_layer_surface->current.layer;
-      phoc_layer_shell_arrange (output);
-      phoc_layer_shell_update_focus ();
-    }
+    self->layer = wlr_layer_surface->current.layer;
+    phoc_layer_shell_arrange (output);
+    phoc_layer_shell_update_focus ();
+  }
 
-    // Cursor changes which happen as a consequence of resizing a layer
-    // surface are applied in phoc_layer_shell_arrange. Because the resize happens
-    // before the underlying surface changes, it will only receive a cursor
-    // update if the new cursor position crosses the *old* sized surface in
-    // the *new* layer surface.
-    // Another cursor move event is needed when the surface actually
-    // changes.
-    struct wlr_surface *surface = wlr_layer_surface->surface;
-    if (surface->previous.width != surface->current.width ||
-        surface->previous.height != surface->current.height) {
-      phoc_layer_shell_update_cursors (self, phoc_input_get_seats (input));
-    }
+  /* Cursor changes which happen as a consequence of resizing a layer
+   * surface are applied in phoc_layer_shell_arrange. Because the resize happens
+   * before the underlying surface changes, it will only receive a cursor
+   * update if the new cursor position crosses the *old* sized surface in
+   * the *new* layer surface.
+   * Another cursor move event is needed when the surface actually changes. */
+  struct wlr_surface *surface = wlr_layer_surface->surface;
+  if (surface->previous.width != surface->current.width ||
+      surface->previous.height != surface->current.height) {
+    phoc_layer_shell_update_cursors (self, phoc_input_get_seats (input));
+  }
 
-    bool geo_changed = memcmp (&old_geo, &self->geo, sizeof (struct wlr_box)) != 0;
-    if (geo_changed || layer_changed) {
-      phoc_output_damage_whole_surface (output,
-                                        wlr_layer_surface->surface,
-                                        old_geo.x,
-                                        old_geo.y);
-      phoc_output_damage_whole_surface (output,
-                                        wlr_layer_surface->surface,
-                                        self->geo.x,
-                                        self->geo.y);
-    } else {
-      phoc_output_damage_from_surface (output,
-                                       wlr_layer_surface->surface,
-                                       self->geo.x,
-                                       self->geo.y);
-    }
+  bool geo_changed = memcmp (&old_geo, &self->geo, sizeof (struct wlr_box)) != 0;
+  if (geo_changed || layer_changed) {
+    phoc_output_damage_whole_surface (output,
+                                      wlr_layer_surface->surface,
+                                      old_geo.x,
+                                      old_geo.y);
+    phoc_output_damage_whole_surface (output,
+                                      wlr_layer_surface->surface,
+                                      self->geo.x,
+                                      self->geo.y);
+  } else {
+    phoc_output_damage_from_surface (output,
+                                     wlr_layer_surface->surface,
+                                     self->geo.x,
+                                     self->geo.y);
+  }
 
+  /* Exclusive zone changes affect the surface ordering in a layer */
+  exclusive_zone_changed = !!(wlr_layer_surface->current.committed &
+                              WLR_LAYER_SURFACE_V1_STATE_EXCLUSIVE_ZONE);
+  if (layer_changed || exclusive_zone_changed)
     phoc_output_set_layer_dirty (output, self->layer);
+
+  if (self->pending_serial &&
+      self->layer_surface->current.configure_serial >= self->pending_serial) {
+    g_debug ("layer-surface ack'ed serial %d", self->layer_surface->current.configure_serial);
+    phoc_layout_transaction_notify_layer_configured (phoc_layout_transaction_get_default ());
+    self->pending_serial = 0;
   }
 }
 
@@ -238,8 +253,10 @@ handle_unmap (struct wl_listener *listener, void *data)
   phoc_layer_surface_damage (self);
   phoc_input_update_cursor_focus (input);
 
-  if (output)
+  if (output) {
     phoc_layer_shell_arrange (output);
+    phoc_output_set_layer_dirty (output, self->layer);
+  }
   phoc_layer_shell_update_focus ();
 }
 
@@ -358,8 +375,6 @@ phoc_layer_surface_finalize (GObject *object)
     g_assert (PHOC_IS_OUTPUT (output));
     phoc_output_remove_frame_callbacks_by_animatable (output, PHOC_ANIMATABLE (self));
     wl_list_remove (&self->output_destroy.link);
-    phoc_layer_shell_arrange (output);
-    phoc_layer_shell_update_focus ();
   }
 
   G_OBJECT_CLASS (phoc_layer_surface_parent_class)->finalize (object);
@@ -501,4 +516,103 @@ phoc_layer_surface_get_mapped (PhocLayerSurface *self)
   g_assert (PHOC_IS_LAYER_SURFACE (self));
 
   return self->mapped;
+}
+
+/**
+ * phoc_layer_surface_covers_output:
+ * @self: The layer surface
+ *
+ * Check whether the given layer surface fully covers its output
+ *
+ * Returns: `TRUE` if the surface fully covers its output, otherwise `FALSE`
+ */
+gboolean
+phoc_layer_surface_covers_output (PhocLayerSurface *self)
+{
+  struct wlr_surface *wlr_surface;
+
+  g_assert (PHOC_IS_LAYER_SURFACE (self));
+
+  if (!self->layer_surface)
+    return FALSE;
+
+  if (!self->mapped)
+    return FALSE;
+
+  if (!self->layer_surface->output)
+    return FALSE;
+
+  if (self->layer_surface->current.anchor != (ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                              ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT |
+                                              ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                                              ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM)) {
+    return FALSE;
+  }
+
+  if (self->layer_surface->current.exclusive_zone != -1)
+    return FALSE;
+
+  if (!G_APPROX_VALUE (self->alpha, 1.0, FLT_EPSILON))
+    return FALSE;
+
+  wlr_surface = self->layer_surface->surface;
+  if (!wlr_surface)
+    return FALSE;
+
+  /* Buffer uses opaque pixel format or is opaque single pixel buffer */
+  if (wlr_surface->opaque)
+    return TRUE;
+
+  /* Surface's opaque region covers the whole surface */
+  pixman_box32_t box = {0, 0, wlr_surface->current.width, wlr_surface->current.height};
+  if (pixman_region32_contains_rectangle (&wlr_surface->opaque_region, &box))
+    return TRUE;
+
+  return FALSE;
+}
+
+/**
+ * phoc_layer_surface_send_configure:
+ * @self: The layer surface
+ *
+ * Send a configure event with the current width and height.
+ *
+ * Send a configure event to the client informing it about the current width and height.
+ * See [method@LayerSurface.get_geometry].
+ */
+void
+phoc_layer_surface_send_configure (PhocLayerSurface *self)
+{
+  guint32 pending_serial;
+  g_assert (PHOC_IS_LAYER_SURFACE (self));
+
+  /* We're not part of a transaction yet but need to */
+  if (!self->pending_serial)
+    phoc_layout_transaction_add_layer_dirty (phoc_layout_transaction_get_default ());
+
+  pending_serial = wlr_layer_surface_v1_configure (self->layer_surface,
+                                                   self->geo.width,
+                                                   self->geo.height);
+  g_debug ("Layersurface %p: current pending serial: %d, new pending serial %d",
+           self,
+           self->pending_serial,
+           pending_serial);
+  self->pending_serial = pending_serial;
+}
+
+/**
+ * phoc_layer_surface_get_serial:
+ * @self: The layer surface
+ *
+ * Gets the serial of the last configure event sent to the client. If 0 then client
+ * has committed a buffer matching the current geometry.
+ *
+ * Returns: the last serial
+ */
+uint32_t
+phoc_layer_surface_get_pending_serial (PhocLayerSurface *self)
+{
+  g_assert (PHOC_IS_LAYER_SURFACE (self));
+
+  return self->pending_serial;
 }

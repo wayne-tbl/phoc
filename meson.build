@@ -1,5 +1,5 @@
 project('phoc', 'c',
-          version: '0.44.0',
+          version: '0.45.0',
           license: 'GPLv3+',
     meson_version: '>= 0.63.0',
   default_options: [
@@ -28,7 +28,7 @@ pkgdatadir = prefix / datadir / meson.project_name()
 
 cc = meson.get_compiler('c')
 
-glib_ver = '2.70'
+glib_ver = '2.80'
 glib_ver_str = 'GLIB_VERSION_@0@'.format(glib_ver.replace('.','_'))
 glib_ver_cmp = '>=@0@'.format(glib_ver)
 
@@ -41,7 +41,7 @@ gsettings_desktop_schemas_dep = dependency('gsettings-desktop-schemas')
 input          = dependency('libinput')
 udev           = dependency('libudev')
 drm            = dependency('libdrm')
-pixman         = dependency('pixman-1')
+pixman         = dependency('pixman-1', version: '>= 0.43.4')
 wayland_client = dependency('wayland-client')
 wayland_protos = dependency('wayland-protocols', version: '>=1.15')
 wayland_server = dependency('wayland-server')
@@ -74,7 +74,7 @@ endif
 if not embed_wlroots.disabled() and wlroots_proj.found()
   wlroots = wlroots_proj.get_variable('wlroots')
 else
-  wlroots = dependency('wlroots', version: ['>= 0.17.0', '< 0.18.0'])
+  wlroots = dependency('wlroots-0.18')
 endif
 wlroots_has_xwayland = wlroots.get_variable(pkgconfig: 'have_xwayland',
                                             internal: 'have_xwayland') == 'true'

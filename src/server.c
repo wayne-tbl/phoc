@@ -9,11 +9,13 @@
 #define G_LOG_DOMAIN "phoc-server"
 
 #include "phoc-config.h"
-#include "render.h"
+#include "phoc-enums.h"
+#include "debug-control.h"
 #include "render-private.h"
-#include "utils.h"
 #include "seat.h"
 #include "server.h"
+#include "surface.h"
+#include "utils.h"
 
 #include <gmobile.h>
 
@@ -27,7 +29,15 @@
 
 /* Maximum protocol versions we support */
 #define PHOC_WL_DISPLAY_VERSION 6
-#define PHOC_LINUX_DMABUF_VERSION 4
+#define PHOC_LINUX_DMABUF_VERSION 5
+
+enum {
+  PROP_0,
+  PROP_DEBUG_FLAGS,
+  PROP_LOG_DOMAINS,
+  PROP_LAST_PROP
+};
+static GParamSpec *props[PROP_LAST_PROP];
 
 /**
  * PhocServer:
@@ -44,7 +54,9 @@ typedef struct _PhocServer {
   PhocInput           *input;
   PhocConfig          *config;
   PhocServerFlags      flags;
+  GStrv                log_domains;
   PhocServerDebugFlags debug_flags;
+  PhocDebugControl    *debug_control;
 
   PhocRenderer        *renderer;
   PhocDesktop         *desktop;
@@ -65,6 +77,8 @@ typedef struct _PhocServer {
 
   struct wlr_linux_dmabuf_v1     *linux_dmabuf_v1;
   struct wlr_data_device_manager *data_device_manager;
+
+  struct wl_listener   new_surface;
 } PhocServer;
 
 static void phoc_server_initable_iface_init (GInitableIface *iface);
@@ -221,7 +235,7 @@ on_shell_state_changed (PhocServer *self, GParamSpec *pspec, PhocPhoshPrivate *p
   case PHOC_PHOSH_PRIVATE_SHELL_STATE_UP:
     /* Shell is up, lower shields */
     wl_list_for_each (output, &self->desktop->outputs, link)
-      phoc_output_lower_shield (output);
+      phoc_output_lower_shield (output, PHOC_EASING_EASE_IN_CUBIC, 0);
     break;
   case PHOC_PHOSH_PRIVATE_SHELL_STATE_UNKNOWN:
   default:
@@ -268,6 +282,16 @@ phoc_server_filter_globals (const struct wl_client *client,
 }
 
 
+static void
+handle_new_surface (struct wl_listener *listener, void *data)
+{
+  struct wlr_surface *surface = data;
+
+  /* Ref is dropped on surface destroy */
+  phoc_surface_new (surface);
+}
+
+
 static gboolean
 phoc_server_initable_init (GInitable    *initable,
                            GCancellable *cancellable,
@@ -285,7 +309,8 @@ phoc_server_initable_init (GInitable    *initable,
   }
   wl_display_set_global_filter (self->wl_display, phoc_server_filter_globals, self);
 
-  self->backend = wlr_backend_autocreate (self->wl_display, &self->session);
+  self->backend = wlr_backend_autocreate (wl_display_get_event_loop (self->wl_display),
+                                          &self->session);
   if (self->backend == NULL) {
     g_set_error (error,
                  G_FILE_ERROR, G_FILE_ERROR_FAILED,
@@ -300,7 +325,7 @@ phoc_server_initable_init (GInitable    *initable,
   wlr_renderer = phoc_renderer_get_wlr_renderer (self->renderer);
   wlr_renderer_init_wl_shm (wlr_renderer, self->wl_display);
 
-  if (wlr_renderer_get_dmabuf_texture_formats (wlr_renderer)) {
+  if (wlr_renderer_get_texture_formats (wlr_renderer, WLR_BUFFER_CAP_DMABUF)) {
     wlr_drm_create (self->wl_display, wlr_renderer);
     self->linux_dmabuf_v1 = wlr_linux_dmabuf_v1_create_with_renderer (self->wl_display,
                                                                       PHOC_LINUX_DMABUF_VERSION,
@@ -312,7 +337,13 @@ phoc_server_initable_init (GInitable    *initable,
   self->data_device_manager = wlr_data_device_manager_create (self->wl_display);
 
   self->compositor = wlr_compositor_create (self->wl_display, PHOC_WL_DISPLAY_VERSION, wlr_renderer);
+  wl_signal_add (&self->compositor->events.new_surface, &self->new_surface);
+  self->new_surface.notify = handle_new_surface;
+
   self->subcompositor = wlr_subcompositor_create (self->wl_display);
+
+  self->debug_control = phoc_debug_control_new (self);
+  phoc_debug_control_set_exported (self->debug_control, TRUE);
 
   return TRUE;
 }
@@ -326,9 +357,55 @@ phoc_server_initable_iface_init (GInitableIface *iface)
 
 
 static void
+phoc_server_set_property (GObject      *object,
+                          guint         property_id,
+                          const GValue *value,
+                          GParamSpec   *pspec)
+{
+  PhocServer *self = PHOC_SERVER (object);
+
+  switch (property_id) {
+  case PROP_DEBUG_FLAGS:
+    phoc_server_set_debug_flags (self, g_value_get_flags (value));
+    break;
+  case PROP_LOG_DOMAINS:
+    phoc_server_set_log_domains (self, g_value_get_boxed (value));
+    break;
+  default:
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+    break;
+  }
+}
+
+
+static void
+phoc_server_get_property (GObject    *object,
+                          guint       property_id,
+                          GValue     *value,
+                          GParamSpec *pspec)
+{
+  PhocServer *self = PHOC_SERVER (object);
+
+  switch (property_id) {
+  case PROP_DEBUG_FLAGS:
+    g_value_set_flags (value, phoc_server_get_debug_flags (self));
+    break;
+  case PROP_LOG_DOMAINS:
+    g_value_set_boxed (value, phoc_server_get_log_domains (self));
+    break;
+  default:
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+    break;
+  }
+}
+
+
+static void
 phoc_server_dispose (GObject *object)
 {
   PhocServer *self = PHOC_SERVER (object);
+
+  g_clear_object (&self->input);
 
   if (self->backend) {
     wl_display_destroy_clients (self->wl_display);
@@ -337,6 +414,7 @@ phoc_server_dispose (GObject *object)
   }
 
   g_clear_object (&self->renderer);
+  g_clear_object (&self->debug_control);
 
   G_OBJECT_CLASS (phoc_server_parent_class)->dispose (object);
 }
@@ -346,9 +424,10 @@ phoc_server_finalize (GObject *object)
 {
   PhocServer *self = PHOC_SERVER (object);
 
+  wl_list_remove (&self->new_surface.link);
+
   g_clear_pointer (&self->dt_compatibles, g_strfreev);
   g_clear_handle_id (&self->wl_source, g_source_remove);
-  g_clear_object (&self->input);
   g_clear_object (&self->desktop);
   g_clear_pointer (&self->session_exec, g_free);
 
@@ -359,7 +438,10 @@ phoc_server_finalize (GObject *object)
 
   g_clear_pointer (&self->config, phoc_config_destroy);
 
+  wl_display_terminate (self->wl_display);
   g_clear_pointer (&self->wl_display, wl_display_destroy);
+
+  g_clear_pointer (&self->log_domains, g_strfreev);
 
   G_OBJECT_CLASS (phoc_server_parent_class)->finalize (object);
 }
@@ -370,16 +452,46 @@ phoc_server_class_init (PhocServerClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
+  object_class->get_property = phoc_server_get_property;
+  object_class->set_property = phoc_server_set_property;
   object_class->finalize = phoc_server_finalize;
   object_class->dispose = phoc_server_dispose;
+
+  /**
+   * PhocServer:debug-flags
+   *
+   * The debug flags currently active
+   */
+  props[PROP_DEBUG_FLAGS] =
+    g_param_spec_flags ("debug-flags", "", "",
+                        PHOC_TYPE_SERVER_DEBUG_FLAGS,
+                        PHOC_SERVER_DEBUG_FLAG_NONE,
+                        G_PARAM_READWRITE | G_PARAM_EXPLICIT_NOTIFY | G_PARAM_STATIC_STRINGS);
+  /**
+   * PhocServer:log-domains
+   *
+   * The current log domains
+   */
+  props[PROP_LOG_DOMAINS] =
+    g_param_spec_boxed ("log-domains", "", "",
+                        G_TYPE_STRV,
+                        G_PARAM_READWRITE | G_PARAM_EXPLICIT_NOTIFY | G_PARAM_STATIC_STRINGS);
+
+  g_object_class_install_properties (object_class, PROP_LAST_PROP, props);
 }
+
 
 static void
 phoc_server_init (PhocServer *self)
 {
+  const char *messages_debug;
   g_autoptr (GError) err = NULL;
 
   self->dt_compatibles = gm_device_tree_get_compatibles (NULL, &err);
+
+  messages_debug = g_getenv ("G_MESSAGES_DEBUG");
+  if (messages_debug)
+    self->log_domains = g_strsplit (messages_debug, " ", -1);
 }
 
 /**
@@ -416,7 +528,6 @@ phoc_server_get_default (void)
  * @exec: The executable to run
  * @mainloop:(transfer none): The mainloop
  * @flags: The flags to use for spawning the server
- * @debug_flags: The debug flags to use
  *
  * Perform wayland server initialization: parse command line and config,
  * create the wayland socket, setup env vars.
@@ -424,22 +535,20 @@ phoc_server_get_default (void)
  * Returns: %TRUE on success, %FALSE otherwise
  */
 gboolean
-phoc_server_setup (PhocServer *self, PhocConfig *config,
-                   const char *exec, GMainLoop *mainloop,
-                   PhocServerFlags flags,
-                   PhocServerDebugFlags debug_flags)
+phoc_server_setup (PhocServer      *self,
+                   PhocConfig      *config,
+                   const char      *exec,
+                   GMainLoop       *mainloop,
+                   PhocServerFlags  flags)
 {
   g_assert (!self->inited);
 
   self->config = config;
   self->flags = flags;
-  self->debug_flags = debug_flags;
   self->mainloop = mainloop;
-  self->exit_status = 1;
   self->desktop = phoc_desktop_new ();
   self->input = phoc_input_new ();
   self->session_exec = g_strdup (exec);
-  self->mainloop = mainloop;
 
   const char *socket = wl_display_add_socket_auto (self->wl_display);
   if (!socket) {
@@ -588,6 +697,81 @@ phoc_server_check_debug_flags (PhocServer *self, PhocServerDebugFlags check)
   g_assert (PHOC_IS_SERVER (self));
 
   return !!(self->debug_flags & check);
+}
+
+/**
+ * phoc_server_set_debug_flags:
+ * @self: The server
+ * @flags: The debug flags
+ *
+ * Set the currently enabled debug flags
+ */
+void
+phoc_server_set_debug_flags (PhocServer *self, PhocServerDebugFlags flags)
+{
+  g_assert (PHOC_IS_SERVER (self));
+
+  if (self->debug_flags == flags)
+    return;
+
+  self->debug_flags = flags;
+  g_object_notify_by_pspec (G_OBJECT (self), props[PROP_DEBUG_FLAGS]);
+}
+
+/**
+ * phoc_server_get_debug_flags:
+ * @self: The server
+ *
+ * Get the debug flags
+ */
+PhocServerDebugFlags
+phoc_server_get_debug_flags (PhocServer *self)
+{
+  g_assert (PHOC_IS_SERVER (self));
+
+  return self->debug_flags;
+}
+
+/**
+ * phoc_server_set_log_domains:
+ * @self: The server
+ * @log_domains: The log domains
+ *
+ * Set the currently enabled logging domains
+ */
+void
+phoc_server_set_log_domains (PhocServer *self, const char *const *log_domains)
+{
+  g_assert (PHOC_IS_SERVER (self));
+
+  if (!self->log_domains && !log_domains)
+    return;
+
+  if (self->log_domains && log_domains &&
+      g_strv_equal ((const char *const *)self->log_domains, log_domains)) {
+    return;
+  }
+
+  g_strfreev (self->log_domains);
+  self->log_domains = g_strdupv ((GStrv)log_domains);
+
+  g_log_writer_default_set_debug_domains (log_domains);
+
+  g_object_notify_by_pspec (G_OBJECT (self), props[PROP_LOG_DOMAINS]);
+}
+
+/**
+ * phoc_server_get_log_domains:
+ * @self: The server
+ *
+ * Get the logging domains
+ */
+const char *const *
+phoc_server_get_log_domains (PhocServer *self)
+{
+  g_assert (PHOC_IS_SERVER (self));
+
+  return (const char *const *)self->log_domains;
 }
 
 /**

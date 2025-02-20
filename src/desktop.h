@@ -60,7 +60,6 @@ struct _PhocDesktop {
   struct wlr_virtual_pointer_manager_v1 *virtual_pointer;
   struct wlr_tablet_manager_v2 *tablet_v2;
   struct wlr_pointer_constraints_v1 *pointer_constraints;
-  struct wlr_presentation *presentation;
   struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager_v1;
   struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
   struct wlr_pointer_gestures_v1 *pointer_gestures;
@@ -70,8 +69,9 @@ struct _PhocDesktop {
   struct wlr_security_context_manager_v1 *security_context_manager_v1;
 
   struct wl_listener new_output;
+  struct wl_listener backend_destroy;
   struct wl_listener layout_change;
-  struct wl_listener xdg_shell_surface;
+  struct wl_listener xdg_shell_toplevel;
   struct wl_listener layer_shell_surface;
   struct wl_listener xdg_toplevel_decoration;
   struct wl_listener virtual_keyboard_new;
@@ -123,7 +123,7 @@ struct wlr_surface *phoc_desktop_wlr_surface_at (PhocDesktop *desktop,
                                                  double      *sx,
                                                  double      *sy,
                                                  PhocView   **view);
-gboolean phoc_desktop_view_is_visible (PhocDesktop *desktop, PhocView *view);
+gboolean phoc_desktop_view_check_visibility (PhocDesktop *self, PhocView *view);
 void     phoc_desktop_set_view_always_on_top (PhocDesktop *self, PhocView *view, gboolean on_top);
 
 PhocLayerSurface  *phoc_desktop_layer_surface_at(PhocDesktop *self,
@@ -139,5 +139,6 @@ PhocPhoshPrivate    *phoc_desktop_get_phosh_private              (PhocDesktop *s
 
 void                 phoc_desktop_notify_activity                (PhocDesktop *self,
                                                                   PhocSeat    *seat);
+
 gboolean phoc_desktop_is_privileged_protocol (PhocDesktop            *self,
                                               const struct wl_global *global);

@@ -16,6 +16,7 @@
 #include "cursor.h"
 #include "desktop.h"
 #include "input.h"
+#include "surface.h"
 #include "server.h"
 #include "view.h"
 #include "view-child-private.h"
@@ -44,6 +45,9 @@ typedef struct _PhocXdgPopup {
   struct wl_listener    reposition;
   struct wl_listener    surface_commit;
 
+  struct {
+    struct wlr_box      box;
+  } previous;
   gboolean              repositioned;
 } PhocXdgPopup;
 
@@ -68,34 +72,14 @@ static void
 popup_unconstrain (PhocXdgPopup* self)
 {
   PhocView *view = phoc_view_child_get_view (PHOC_VIEW_CHILD (self));
-  struct wlr_box geom;
-  struct wlr_box output_box;
-  struct wlr_box usable_area;
-  PhocOutput *output;
+  struct wlr_box output_toplevel_sx_box;
+  gboolean ret;
 
-  phoc_view_get_geometry (view,  &geom);
-  output = phoc_desktop_layout_get_output (view->desktop,
-                                           view->box.x + geom.x,
-                                           view->box.y + geom.y);
-  if (output == NULL) {
-    g_warning ("No output found for view %p at %d,%d", view, view->box.x, view->box.y);
+  ret = phoc_view_get_popup_unconstrain_region (view, &output_toplevel_sx_box);
+  if (!ret) {
     wlr_xdg_surface_schedule_configure (self->wlr_popup->base);
     return;
   }
-
-  wlr_output_layout_get_box (view->desktop->layout, output->wlr_output, &output_box);
-  usable_area = output->usable_area;
-  usable_area.x += output_box.x;
-  usable_area.y += output_box.y;
-
-  /* the output box expressed in the coordinate system of the toplevel parent
-   * of the popup */
-  struct wlr_box output_toplevel_sx_box = {
-    .x = usable_area.x - view->box.x,
-    .y = usable_area.y - view->box.y,
-    .width = usable_area.width,
-    .height = usable_area.height,
-  };
 
   wlr_xdg_popup_unconstrain_from_box (self->wlr_popup, &output_toplevel_sx_box);
 }
@@ -125,7 +109,18 @@ popup_handle_reposition (struct wl_listener *listener, void *data)
 {
   PhocXdgPopup *self = wl_container_of (listener, self, reposition);
 
-  self->repositioned = TRUE;
+  if (self->wlr_popup->base->surface) {
+    double sx, sy;
+
+    self->repositioned = TRUE;
+    wlr_xdg_popup_get_position (self->wlr_popup, &sx, &sy);
+    self->previous.box = (struct wlr_box) {
+      sx, sy,
+      self->wlr_popup->base->surface->current.width,
+      self->wlr_popup->base->surface->current.height
+    };
+  }
+
   popup_unconstrain (self);
 }
 
@@ -139,10 +134,30 @@ popup_handle_surface_commit (struct wl_listener *listener, void *data)
     popup_unconstrain (self);
 
   if (self->repositioned) {
-    /* clear the old popup position */
-    /* TODO: this is too much damage */
-    phoc_view_damage_whole (phoc_view_child_get_view (PHOC_VIEW_CHILD (self)));
+    PhocSurface *surface = PHOC_SURFACE (self->wlr_popup->base->surface->data);
+    double sx, sy;
+
+    g_assert (PHOC_IS_SURFACE (surface));
     self->repositioned = FALSE;
+
+    wlr_xdg_popup_get_position (self->wlr_popup, &sx, &sy);
+
+    /* Old position */
+    phoc_surface_add_damage_box (surface, &(struct wlr_box) {
+        floor (self->previous.box.x - sx),
+        floor (self->previous.box.y - sy),
+        self->previous.box.width,
+        self->previous.box.height,
+      });
+
+    /* New position */
+    phoc_surface_add_damage_box (surface, &(struct wlr_box) {
+        0, 0,
+        self->wlr_popup->base->surface->current.width,
+        self->wlr_popup->base->surface->current.height,
+      });
+
+    phoc_view_child_apply_damage (PHOC_VIEW_CHILD (self));
   }
 }
 

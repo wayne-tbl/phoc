@@ -1,3 +1,27 @@
+phoc 0.45.0
+-----------
+Released February 2025
+* Use wlroots 0.18.x API (currently 0.18.2)
+* Support xdg-shell's surface suspend for fully occluded windows
+  (e.g. when screen is locked)
+* Smoothen output mode/scale/transform changes
+* Fix touch point and damage tracking debugging
+* Allow to enable/disable touch point and damage tracking debugging at
+  runtime
+* Allow to tweak logging at runtime
+* Allow for more useful startup logging
+* Lots of internal modernization, cleanup and robustness fixes
+* Improve popup reposition and submit less but more correct damage
+* Backport several fixes and cleanups from our branch tracking
+  wlroots 0.19.x
+* Make `PhocViewChild` and `PhocView` a bit more boring
+* Issues fixed:
+    * https://gitlab.gnome.org/World/Phosh/phosh/-/issues/1161
+    * https://gitlab.gnome.org/World/Phosh/phoc/-/issues/389
+    * https://gitlab.gnome.org/World/Phosh/phoc/-/issues/383
+* Contributors:
+    * Guido Günther
+
 phoc 0.44.0
 -----------
 Released December 2024
@@ -138,7 +162,7 @@ Released February 2024
 
 phoc 0.35.0
 -----------
-Released Januar 2024
+Released January 2024
 * Make using dtrace probes easy and add some useful tracing scripts
 * Fix more popup and fullscreen related issues
 * Update to wlroots 0.17.1

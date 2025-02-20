@@ -38,7 +38,7 @@ phoc_input_get_device_type (enum wlr_input_device_type type)
     return "switch";
   case WLR_INPUT_DEVICE_TOUCH:
     return "touch";
-  case WLR_INPUT_DEVICE_TABLET_TOOL:
+  case WLR_INPUT_DEVICE_TABLET:
     return "tablet tool";
   case WLR_INPUT_DEVICE_TABLET_PAD:
     return "tablet pad";
@@ -94,8 +94,7 @@ handle_new_input (struct wl_listener *listener, void *data)
     return;
   }
 
-  g_debug ("New input device: %s (%d:%d) %s seat:%s", device->name,
-           device->vendor, device->product,
+  g_debug ("New input device: %s %s seat:%s", device->name,
            phoc_input_get_device_type (device->type), seat_name);
 
   phoc_seat_add_device (seat, device);
@@ -126,6 +125,8 @@ static void
 phoc_input_finalize (GObject *object)
 {
   PhocInput *self = PHOC_INPUT (object);
+
+  wl_list_remove (&self->new_input.link);
 
   g_clear_slist (&self->seats, g_object_unref);
 
@@ -229,10 +230,8 @@ phoc_input_get_last_active_seat (PhocInput *self)
     PhocSeat *_seat = PHOC_SEAT (elem->data);
 
     g_assert (PHOC_IS_SEAT (_seat));
-    if (!seat || (seat->seat->last_event.tv_sec > _seat->seat->last_event.tv_sec &&
-                  seat->seat->last_event.tv_nsec > _seat->seat->last_event.tv_nsec)) {
+    if (!seat || phoc_seat_get_last_event_ts (seat) > phoc_seat_get_last_event_ts (_seat))
       seat = _seat;
-    }
   }
   return seat;
 }
