@@ -897,6 +897,10 @@ phoc_output_initable_init (GInitable    *initable,
   priv->request_state.notify = handle_request_state;
   wl_signal_add (&self->wlr_output->events.request_state, &priv->request_state);
 
+  self->output_power_manager_set_mode.notify = phoc_output_handle_output_power_manager_set_mode;
+  wl_signal_add (&self->desktop->output_power_manager_v1->events.set_mode,
+                 &self->output_power_manager_set_mode);
+
   PhocOutputConfig *output_config = phoc_config_get_output (config, self);
   struct wlr_output_state pending;
   phoc_output_fill_state (self, output_config, &pending);
@@ -965,6 +969,7 @@ phoc_output_finalize (GObject *object)
 
   wl_list_remove (&self->commit.link);
   wl_list_remove (&self->output_destroy.link);
+  wl_list_remove (&self->output_power_manager_set_mode.link);
 
   wl_list_remove (&priv->request_state.link);
   wl_list_remove (&priv->damage.link);
@@ -1741,16 +1746,15 @@ phoc_handle_output_manager_test (struct wl_listener *listener, void *data)
 void
 phoc_output_handle_output_power_manager_set_mode (struct wl_listener *listener, void *data)
 {
+  PhocOutput *self = wl_container_of (listener, self, output_power_manager_set_mode);
   struct wlr_output_power_v1_set_mode_event *event = data;
   struct wlr_output_state pending;
-  PhocOutput *self;
   bool enable = true;
   bool current;
 
   g_return_if_fail (event && event->output && event->output->data);
 
-  self = event->output->data;
-  g_debug ("Request to set output power mode of %p to %d", self->wlr_output->name, event->mode);
+  g_debug ("Request to set output power mode of %s to %d", self->wlr_output->name, event->mode);
   switch (event->mode) {
   case ZWLR_OUTPUT_POWER_V1_MODE_OFF:
     enable = false;
@@ -1759,7 +1763,7 @@ phoc_output_handle_output_power_manager_set_mode (struct wl_listener *listener, 
     enable = true;
     break;
   default:
-    g_warning ("Unhandled power state %d for %p", event->mode, self->wlr_output->name);
+    g_warning ("Unhandled power state %d for %s", event->mode, self->wlr_output->name);
     return;
   }
 
@@ -1771,7 +1775,7 @@ phoc_output_handle_output_power_manager_set_mode (struct wl_listener *listener, 
   wlr_output_state_set_enabled (&pending, enable);
 
   if (!wlr_output_commit_state (self->wlr_output, &pending)) {
-    g_warning ("Failed to commit power mode change to %d for %p", enable, self);
+    g_warning ("Failed to commit power mode change to %d for %s", enable, self->wlr_output->name);
     wlr_output_state_finish (&pending);
     return;
   }

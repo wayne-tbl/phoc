@@ -758,9 +758,6 @@ phoc_desktop_constructed (GObject *object)
   wl_signal_add (&self->output_manager_v1->events.test, &self->output_manager_test);
 
   self->output_power_manager_v1 = wlr_output_power_manager_v1_create (wl_display);
-  self->output_power_manager_set_mode.notify = phoc_output_handle_output_power_manager_set_mode;
-  wl_signal_add (&self->output_power_manager_v1->events.set_mode,
-                 &self->output_power_manager_set_mode);
 
   priv->data_control_manager_v1 = wlr_data_control_manager_v1_create (wl_display);
 
@@ -802,7 +799,6 @@ phoc_desktop_finalize (GObject *object)
   wl_list_remove (&self->pointer_constraint.link);
   wl_list_remove (&self->output_manager_apply.link);
   wl_list_remove (&self->output_manager_test.link);
-  wl_list_remove (&self->output_power_manager_set_mode.link);
   wl_list_remove (&self->xdg_activation_v1_request_activate.link);
 
 #ifdef PHOC_XWAYLAND

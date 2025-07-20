@@ -79,7 +79,6 @@ struct _PhocDesktop {
   struct wl_listener pointer_constraint;
   struct wl_listener output_manager_apply;
   struct wl_listener output_manager_test;
-  struct wl_listener output_power_manager_set_mode;
   struct wl_listener xdg_activation_v1_request_activate;
 
 #ifdef PHOC_XWAYLAND
