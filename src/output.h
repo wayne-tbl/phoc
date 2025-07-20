@@ -58,6 +58,7 @@ struct _PhocOutput {
 
   struct wl_listener        commit;
   struct wl_listener        output_destroy;
+  struct wl_listener        output_power_manager_set_mode;
 
   /* TODO: Should be private, move bits out of renderer */
   struct wlr_damage_ring    damage_ring;
