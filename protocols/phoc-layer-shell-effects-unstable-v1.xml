@@ -25,7 +25,7 @@
     THIS SOFTWARE.
   </copyright>
 
-  <interface name="zphoc_layer_shell_effects_v1" version="3">
+  <interface name="zphoc_layer_shell_effects_v1" version="4">
     <description summary="Adjust properties of layer surfaces">
       Assigns additional features to layer surfaces such as opacity or gestures interaction.
 
@@ -107,6 +107,16 @@
       </description>
       <arg name="id" type="new_id" interface="zphoc_stacked_layer_surface_v1"/>
       <arg name="surface" type="object" interface="zwlr_layer_surface_v1"/>
+    </request>
+
+    <request name="get_blur_layer_surface" since="4">
+      <description summary="Blur the background behind a layer_surface">
+        Requests that the compositor blurs the content rendered beneath
+        the layer surface so that translucent parts of the surface appear
+        frosted.
+      </description>
+      <arg name="id" type="new_id" interface="zphoc_blur_layer_surface_v1"/>
+      <arg name="layer_surface" type="object" interface="zwlr_layer_surface_v1"/>
     </request>
 
   </interface>
@@ -255,6 +265,29 @@
     <request name="destroy" type="destructor">
       <description summary="destroy the alpha_layer_surface">
         This request destroys the alpha layer surface.
+      </description>
+    </request>
+
+  </interface>
+
+  <interface name="zphoc_blur_layer_surface_v1" version="1">
+
+    <request name="set_blur">
+      <description summary="Set the blur strength">
+        Set the strength of the blur applied to the content beneath the
+        surface. A value of 0 disables blur; higher values increase the
+        blur radius. The compositor maps the value onto its blur
+        implementation; useful values are in the range 0 to 100.
+
+        Blur is double-buffered, see wl_surface.commit.
+      </description>
+      <arg name="radius" type="uint"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the blur_layer_surface">
+        This request destroys the blur layer surface and removes the
+        blur from the underlying surface.
       </description>
     </request>
 

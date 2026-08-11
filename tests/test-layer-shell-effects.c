@@ -124,6 +124,49 @@ test_client_layer_shell_effects_alpha_surface_simple (PhocTestClientGlobals *glo
 
   return TRUE;
 }
+
+
+static gboolean
+test_client_layer_shell_effects_blur_surface_simple (PhocTestClientGlobals *globals, gpointer data)
+{
+  PhocTestLayerSurface *ls_green;
+  struct zphoc_blur_layer_surface_v1 *blur_surf;
+
+  ls_green = phoc_test_layer_surface_new (globals, 0, HEIGHT, 0xFF00FF00,
+                                          ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                                          ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                          ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
+                                          HEIGHT);
+  g_assert_nonnull (ls_green);
+
+  blur_surf = zphoc_layer_shell_effects_v1_get_blur_layer_surface (
+    globals->layer_shell_effects, ls_green->layer_surface);
+  g_assert_nonnull (blur_surf);
+
+  zphoc_blur_layer_surface_v1_set_blur (blur_surf, 60);
+  wl_surface_commit (ls_green->wl_surface);
+  wl_display_roundtrip (globals->display);
+
+  /* Render several frames with blur active. The blur samples the output's
+   * framebuffer and runs raw GL inside the render pass, so this is mostly a
+   * guard against it upsetting the pass or the compositor outright dying. */
+  for (int i = 0; i < 3; i++) {
+    PhocTestBuffer *buf = phoc_test_client_capture_output (globals, &globals->output);
+
+    g_assert_nonnull (buf);
+    phoc_test_buffer_free (buf);
+  }
+
+  /* The surface is opaque, so with the backdrop hidden behind it the output
+   * must look exactly as it does without blur */
+  phoc_assert_screenshot (globals, "test-layer-shell-effects-alpha-1.png");
+
+  zphoc_blur_layer_surface_v1_destroy (blur_surf);
+  phoc_test_layer_surface_free (ls_green);
+  phoc_assert_screenshot (globals, "empty.png");
+
+  return TRUE;
+}
 #undef HEIGHT
 
 
@@ -184,6 +227,15 @@ test_layer_shell_effects_alpha_surface_simple (void)
 
 
 static void
+test_layer_shell_effects_blur_surface_simple (void)
+{
+  PhocTestClientIface iface = { .client_run =  test_client_layer_shell_effects_blur_surface_simple };
+
+  phoc_test_client_run (TEST_PHOC_CLIENT_TIMEOUT, &iface, NULL);
+}
+
+
+static void
 test_layer_shell_effects_stack_surface_simple (void)
 {
   PhocTestClientIface iface = { .client_run =  test_client_layer_shell_effects_stack_surface_simple };
@@ -197,10 +249,15 @@ main (gint argc, gchar *argv[])
 {
   g_test_init (&argc, &argv, NULL);
 
+  /* The blur test needs the blur to actually run, it is opt in */
+  g_setenv ("PHOC_BLUR", "1", TRUE);
+
   PHOC_TEST_ADD ("/phoc/layer-shell-effects/drag-surface/simple",
                  test_layer_shell_effects_drag_surface_simple);
   PHOC_TEST_ADD ("/phoc/layer-shell-effects/alpha-surface/simple",
                  test_layer_shell_effects_alpha_surface_simple);
+  PHOC_TEST_ADD ("/phoc/layer-shell-effects/blur-surface/simple",
+                 test_layer_shell_effects_blur_surface_simple);
   PHOC_TEST_ADD ("/phoc/layer-shell-effects/bind-surface/simple",
                  test_layer_shell_effects_stack_surface_simple);
   return g_test_run();

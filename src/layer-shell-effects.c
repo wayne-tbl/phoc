@@ -18,7 +18,7 @@
 
 #include <glib-object.h>
 
-#define LAYER_SHELL_EFFECTS_VERSION 3
+#define LAYER_SHELL_EFFECTS_VERSION 4
 #define DRAG_ACCEPT_THRESHOLD_DISTANCE 16
 #define DRAG_REJECT_THRESHOLD_DISTANCE 24
 #define SLIDE_ANIM_DURATION_MS 300 /* ms */
@@ -98,6 +98,20 @@ struct _PhocAlphaLayerSurface {
 };
 
 
+struct _PhocBlurLayerSurface {
+  struct wl_resource *resource;
+  PhocLayerSurface *layer_surface;
+  PhocLayerShellEffects *layer_shell_effects;
+
+  /* Double buffered blur radius set by the client */
+  guint32 current;
+  guint32 pending;
+
+  struct wl_listener surface_handle_commit;
+  struct wl_listener layer_surface_handle_destroy;
+};
+
+
 struct _PhocStackedLayerSurface {
   struct wl_resource *resource;
   PhocLayerSurface *layer_surface;
@@ -131,6 +145,8 @@ struct _PhocLayerShellEffects {
 
   GSList             *alpha_surfaces;
 
+  GSList             *blur_surfaces;
+
   GSList             *stacked_surfaces;
 };
 
@@ -139,6 +155,7 @@ G_DEFINE_TYPE (PhocLayerShellEffects, phoc_layer_shell_effects, G_TYPE_OBJECT)
 static PhocLayerShellEffects     *phoc_layer_shell_effects_from_resource     (struct wl_resource *resource);
 static PhocDraggableLayerSurface *phoc_draggable_layer_surface_from_resource (struct wl_resource *resource);
 static PhocAlphaLayerSurface     *phoc_alpha_layer_surface_from_resource     (struct wl_resource *resource);
+static PhocBlurLayerSurface      *phoc_blur_layer_surface_from_resource      (struct wl_resource *resource);
 static PhocStackedLayerSurface   *phoc_stacked_layer_surface_from_resource   (struct wl_resource *resource);
 
 static void
@@ -332,6 +349,30 @@ static const struct zphoc_alpha_layer_surface_v1_interface alpha_layer_surface_v
 
 
 static void
+handle_blur_layer_surface_set_blur (struct wl_client   *client,
+                                    struct wl_resource *resource,
+                                    uint32_t            radius)
+{
+  PhocBlurLayerSurface *blur_surface = wl_resource_get_user_data (resource);
+
+  g_assert (blur_surface);
+
+  g_debug ("Blur layer surface radius for %p: %u", blur_surface, radius);
+
+  if (blur_surface->layer_surface == NULL)
+    return;
+
+  blur_surface->pending = radius;
+}
+
+
+static const struct zphoc_blur_layer_surface_v1_interface blur_layer_surface_v1_impl = {
+  .set_blur = handle_blur_layer_surface_set_blur,
+  .destroy = resource_handle_destroy,
+};
+
+
+static void
 handle_stacked_layer_surface_stack_above (struct wl_client   *client,
                                           struct wl_resource *resource,
                                           struct wl_resource *surface_resource)
@@ -418,6 +459,15 @@ phoc_alpha_layer_surface_from_resource (struct wl_resource *resource)
 }
 
 
+static PhocBlurLayerSurface *
+phoc_blur_layer_surface_from_resource (struct wl_resource *resource)
+{
+  g_assert (wl_resource_instance_of (resource, &zphoc_blur_layer_surface_v1_interface,
+                                     &blur_layer_surface_v1_impl));
+  return wl_resource_get_user_data (resource);
+}
+
+
 static PhocStackedLayerSurface *
 phoc_stacked_layer_surface_from_resource (struct wl_resource *resource)
 {
@@ -489,6 +539,39 @@ phoc_alpha_layer_surface_destroy (PhocAlphaLayerSurface *alpha_surface)
 
 
 static void
+phoc_blur_layer_surface_destroy (PhocBlurLayerSurface *blur_surface)
+{
+  PhocLayerShellEffects *layer_shell_effects;
+
+  if (blur_surface == NULL)
+    return;
+
+  g_debug ("Destroying blur_layer_surface %p (res %p)", blur_surface, blur_surface->resource);
+  layer_shell_effects = PHOC_LAYER_SHELL_EFFECTS (blur_surface->layer_shell_effects);
+  g_assert (PHOC_IS_LAYER_SHELL_EFFECTS (layer_shell_effects));
+
+  if (blur_surface->layer_surface) {
+    PhocOutput *output;
+
+    phoc_layer_surface_set_blur (blur_surface->layer_surface, 0);
+    output = phoc_layer_surface_get_output (blur_surface->layer_surface);
+    if (output)
+      phoc_output_damage_whole (output);
+
+    /* wlr signals */
+    wl_list_remove (&blur_surface->surface_handle_commit.link);
+    wl_list_remove (&blur_surface->layer_surface_handle_destroy.link);
+  }
+  layer_shell_effects->blur_surfaces = g_slist_remove (layer_shell_effects->blur_surfaces,
+                                                       blur_surface);
+
+  blur_surface->layer_surface = NULL;
+  wl_resource_set_user_data (blur_surface->resource, NULL);
+  g_free (blur_surface);
+}
+
+
+static void
 phoc_stacked_layer_surface_destroy (PhocStackedLayerSurface *stacked_surface)
 {
   PhocLayerShellEffects *layer_shell_effects;
@@ -550,6 +633,15 @@ alpha_layer_surface_handle_resource_destroy (struct wl_resource *resource)
 
 
 static void
+blur_layer_surface_handle_resource_destroy (struct wl_resource *resource)
+{
+  PhocBlurLayerSurface *blur_surface = phoc_blur_layer_surface_from_resource (resource);
+
+  phoc_blur_layer_surface_destroy (blur_surface);
+}
+
+
+static void
 stacked_layer_surface_handle_resource_destroy (struct wl_resource *resource)
 {
   PhocStackedLayerSurface *stacked_surface = phoc_stacked_layer_surface_from_resource (resource);
@@ -565,6 +657,16 @@ alpha_layer_surface_handle_destroy (struct wl_listener *listener, void *data)
 
   /* The layer-surface is unusable for us now */
   alpha_surface->layer_surface = NULL;
+}
+
+
+static void
+blur_layer_surface_handle_destroy (struct wl_listener *listener, void *data)
+{
+  PhocBlurLayerSurface *blur_surface = wl_container_of(listener, blur_surface, layer_surface_handle_destroy);
+
+  /* The layer-surface is unusable for us now */
+  blur_surface->layer_surface = NULL;
 }
 
 
@@ -675,6 +777,29 @@ alpha_surface_handle_commit (struct wl_listener *listener, void *data)
                                     layer_surface->layer_surface->surface,
                                     layer_surface->geo.x,
                                     layer_surface->geo.y);
+}
+
+
+static void
+blur_surface_handle_commit (struct wl_listener *listener, void *data)
+{
+  PhocBlurLayerSurface *blur_surface =
+    wl_container_of(listener, blur_surface, surface_handle_commit);
+  PhocLayerSurface *layer_surface = blur_surface->layer_surface;
+  PhocOutput *output;
+
+  if (layer_surface == NULL)
+    return;
+
+  if (blur_surface->current == blur_surface->pending)
+    return;
+
+  blur_surface->current = blur_surface->pending;
+  phoc_layer_surface_set_blur (layer_surface, blur_surface->current);
+
+  output = phoc_layer_surface_get_output (layer_surface);
+  if (output)
+    phoc_output_damage_whole (output);
 }
 
 
@@ -851,6 +976,67 @@ handle_get_alpha_layer_surface (struct wl_client   *client,
 
 
 static void
+handle_get_blur_layer_surface (struct wl_client   *client,
+                               struct wl_resource *layer_shell_effects_resource,
+                               uint32_t            id,
+                               struct wl_resource *layer_surface_resource)
+{
+  PhocLayerShellEffects *self;
+  PhocLayerSurface *layer_surface;
+  g_autofree PhocBlurLayerSurface *blur_surface = NULL;
+  struct wlr_surface *wlr_surface;
+  struct wlr_layer_surface_v1 *wlr_layer_surface;
+  int version;
+
+  self = phoc_layer_shell_effects_from_resource (layer_shell_effects_resource);
+  g_assert (PHOC_IS_LAYER_SHELL_EFFECTS (self));
+  wlr_layer_surface = wlr_layer_surface_v1_from_resource (layer_surface_resource);
+  wlr_surface = wlr_layer_surface->surface;
+  g_assert (wlr_surface);
+
+  blur_surface = g_new0 (PhocBlurLayerSurface, 1);
+
+  version = wl_resource_get_version (layer_shell_effects_resource);
+  blur_surface->layer_shell_effects = self;
+  blur_surface->resource = wl_resource_create (client,
+                                               &zphoc_blur_layer_surface_v1_interface,
+                                               version,
+                                               id);
+  if (blur_surface->resource == NULL) {
+    wl_client_post_no_memory(client);
+    return;
+  }
+
+  g_debug ("New blur layer_surface %p (res %p)", blur_surface, blur_surface->resource);
+  wl_resource_set_implementation (blur_surface->resource,
+                                  &blur_layer_surface_v1_impl,
+                                  blur_surface,
+                                  blur_layer_surface_handle_resource_destroy);
+
+  if (!wlr_layer_surface->data) {
+    wl_resource_post_error (layer_shell_effects_resource,
+                            ZPHOC_LAYER_SHELL_EFFECTS_V1_ERROR_BAD_SURFACE,
+                            "Layer surface not yet committed");
+    return;
+  }
+
+  layer_surface = PHOC_LAYER_SURFACE (wlr_layer_surface->data);
+  g_assert (PHOC_IS_LAYER_SURFACE (layer_surface));
+  blur_surface->layer_surface = layer_surface;
+  blur_surface->current = phoc_layer_surface_get_blur (layer_surface);
+  blur_surface->pending = blur_surface->current;
+
+  blur_surface->surface_handle_commit.notify = blur_surface_handle_commit;
+  wl_signal_add (&wlr_surface->events.commit, &blur_surface->surface_handle_commit);
+
+  blur_surface->layer_surface_handle_destroy.notify = blur_layer_surface_handle_destroy;
+  wl_signal_add (&wlr_layer_surface->events.destroy, &blur_surface->layer_surface_handle_destroy);
+
+  self->blur_surfaces = g_slist_prepend (self->blur_surfaces, g_steal_pointer (&blur_surface));
+}
+
+
+static void
 handle_get_stacked_layer_surface (struct wl_client   *client,
                                   struct wl_resource *layer_shell_effects_resource,
                                   uint32_t            id,
@@ -924,6 +1110,7 @@ static const struct zphoc_layer_shell_effects_v1_interface layer_shell_effects_i
   .get_draggable_layer_surface = handle_get_draggable_layer_surface,
   .get_alpha_layer_surface = handle_get_alpha_layer_surface,
   .get_stacked_layer_surface = handle_get_stacked_layer_surface,
+  .get_blur_layer_surface = handle_get_blur_layer_surface,
 };
 
 

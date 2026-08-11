@@ -584,6 +584,29 @@ phoc_server_get_config (PhocServer *self)
 }
 
 /**
+ * phoc_server_set_debug_flag:
+ * @self: The server
+ * @flag: The flag to change
+ * @enable: Whether to set or clear it
+ *
+ * Turn a debug flag on or off while the compositor is running. The flags are
+ * otherwise parsed once from PHOC_DEBUG at startup, which is no use to anything
+ * that wants to switch one on for a moment -- a screen recording showing where
+ * the screen was touched, say -- and off again afterwards.
+ */
+void
+phoc_server_set_debug_flag (PhocServer *self, PhocServerDebugFlags flag, gboolean enable)
+{
+  g_assert (PHOC_IS_SERVER (self));
+
+  if (enable)
+    self->debug_flags |= flag;
+  else
+    self->debug_flags &= ~flag;
+}
+
+
+/**
  * phoc_server_check_debug_flags:
  * @self: The server
  * @check: The flags to check

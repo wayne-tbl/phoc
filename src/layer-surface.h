@@ -37,6 +37,7 @@ struct _PhocLayerSurface {
   struct wlr_box     geo;
   enum zwlr_layer_shell_v1_layer layer;
   float              alpha;
+  guint              blur_radius;
   bool               mapped;
 };
 
@@ -45,6 +46,8 @@ const char       *phoc_layer_surface_get_namespace (PhocLayerSurface *self);
 PhocOutput       *phoc_layer_surface_get_output (PhocLayerSurface *self);
 void              phoc_layer_surface_set_alpha (PhocLayerSurface *self, float alpha);
 float             phoc_layer_surface_get_alpha (PhocLayerSurface *self);
+void              phoc_layer_surface_set_blur (PhocLayerSurface *self, guint radius);
+guint             phoc_layer_surface_get_blur (PhocLayerSurface *self);
 enum zwlr_layer_shell_v1_layer
                   phoc_layer_surface_get_layer (PhocLayerSurface *self);
 gboolean          phoc_layer_surface_get_mapped (PhocLayerSurface *self);

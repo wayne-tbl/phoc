@@ -327,7 +327,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     globals->gtk_shell1 = wl_registry_bind (registry, name, &gtk_shell1_interface, 3);
   } else if (!g_strcmp0 (interface, zphoc_layer_shell_effects_v1_interface.name)) {
     globals->layer_shell_effects = wl_registry_bind (registry, name,
-                                                     &zphoc_layer_shell_effects_v1_interface, 3);
+                                                     &zphoc_layer_shell_effects_v1_interface, 4);
   } else if (!g_strcmp0 (interface, zxdg_decoration_manager_v1_interface.name)) {
     globals->decoration_manager = wl_registry_bind (registry, name,
                                                      &zxdg_decoration_manager_v1_interface, 1);
@@ -967,8 +967,16 @@ phoc_test_setup (PhocTestFixture *fixture, gconstpointer data)
   g_assert_no_error (err);
 
   g_setenv ("XDG_RUNTIME_DIR", fixture->tmpdir, TRUE);
-  g_setenv ("DISPLAY", display, TRUE);
-  g_setenv ("WLR_BACKENDS", "x11", TRUE);
+  /* Without xvfb-run there is no DISPLAY to preserve, and g_setenv() asserts
+   * on a NULL value rather than telling you what is wrong */
+  if (display != NULL)
+    g_setenv ("DISPLAY", display, TRUE);
+  /* Default to the x11 backend, but let the caller pick another one. Running
+   * nested against a real wayland session is the only way to exercise code
+   * paths that need a GPU renderer, since the x11 test setup only ever gets
+   * the pixman one. */
+  if (g_getenv ("WLR_BACKENDS") == NULL)
+    g_setenv ("WLR_BACKENDS", "x11", TRUE);
 }
 
 static void

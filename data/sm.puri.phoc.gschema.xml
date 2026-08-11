@@ -9,6 +9,17 @@
         Wayland applications and only their main window.
       </description>
     </key>
+    <key name="touch-points" type="b">
+      <default>false</default>
+      <summary>Draw a marker at each touch point</summary>
+      <description>
+        Whether to draw a marker wherever a finger is touching the screen.
+        The same overlay as the touch-points debug flag, switchable while the
+        compositor runs so that a screen recording can show what was pressed
+        and put it away again afterwards.
+      </description>
+    </key>
+
     <key name="scale-to-fit" type="b">
       <default>false</default>
       <summary>Enable automatic scaling of all oversized windows</summary>

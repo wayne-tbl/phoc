@@ -30,6 +30,13 @@ typedef struct _PhocDraggableLayerSurface PhocDraggableLayerSurface;
 typedef struct _PhocAlphaLayerSurface PhocAlphaLayerSurface;
 
 /**
+ * PhocBlurLayerSurface:
+ *
+ * A layer surface with background blur.
+ */
+typedef struct _PhocBlurLayerSurface PhocBlurLayerSurface;
+
+/**
  * PhocStackedLayerSurface:
  *
  * Layer surface stacking

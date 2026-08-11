@@ -25,6 +25,14 @@ typedef struct _PhocRenderContext {
   float                       alpha;
   struct wlr_render_pass     *render_pass;
   enum wlr_scale_filter_mode  tex_filter;
+  /* The renderer driving this frame, set by phoc_renderer_render_output() */
+  PhocRenderer               *renderer;
+  /* Blurred backdrop for layer surfaces with blur as a raw GL texture name,
+   * 0 when there is none. Only valid for the rest of the current frame. */
+  unsigned int                blur_texture;
+  /* TRUE when something has been drawn since blur_texture was captured, so the
+   * next blurred surface needs a fresh capture rather than that stale one. */
+  gboolean                    blur_stale;
 } PhocRenderContext;
 
 
@@ -36,5 +44,8 @@ void          phoc_renderer_render_output (PhocRenderer      *self,
 gboolean      phoc_renderer_render_view_to_buffer (PhocRenderer           *self,
                                                    PhocView               *view,
                                                    struct wlr_buffer      *data);
+void          phoc_renderer_finish_frame          (PhocRenderer           *self);
+void          phoc_renderer_forget_output         (PhocRenderer           *self,
+                                                   PhocOutput             *output);
 
 G_END_DECLS
