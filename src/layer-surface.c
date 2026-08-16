@@ -470,6 +470,36 @@ phoc_layer_surface_get_alpha (PhocLayerSurface *self)
 }
 
 /**
+ * phoc_layer_surface_set_blur:
+ * @self: The layer surface
+ * @radius: The blur radius
+ *
+ * Sets the strength of the background blur behind the surface.
+ * 0 disables blur.
+ */
+void
+phoc_layer_surface_set_blur (PhocLayerSurface *self, guint radius)
+{
+  g_assert (PHOC_IS_LAYER_SURFACE (self));
+
+  self->blur_radius = radius;
+}
+
+/**
+ * phoc_layer_surface_get_blur:
+ * @self: The layer surface
+ *
+ * Returns: the background blur radius, 0 means no blur
+ */
+guint
+phoc_layer_surface_get_blur (PhocLayerSurface *self)
+{
+  g_assert (PHOC_IS_LAYER_SURFACE (self));
+
+  return self->blur_radius;
+}
+
+/**
  * phoc_layer_surface_get_layer:
  * @self: The layer surface
  *
