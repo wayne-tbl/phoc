@@ -14,6 +14,7 @@
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "phosh-private-client-protocol.h"
 #include "phoc-layer-shell-effects-unstable-v1-client-protocol.h"
+#include "phoc-furios-layer-shell-effects-unstable-v1-client-protocol.h"
 
 #pragma once
 
@@ -49,6 +50,7 @@ typedef struct _PhocTestWlGlobals {
   struct xdg_wm_base *xdg_shell;
   struct zwlr_layer_shell_v1 *layer_shell;
   struct zphoc_layer_shell_effects_v1 *layer_shell_effects;
+  struct zphoc_furios_layer_shell_effects_v1 *furios_layer_shell_effects;
   struct zwlr_screencopy_manager_v1 *screencopy_manager;
   struct zwlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
   struct zxdg_decoration_manager_v1 *decoration_manager;
