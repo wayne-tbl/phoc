@@ -133,6 +133,7 @@ void        phoc_output_handle_gamma_control_set_gamma (struct wl_listener *list
 struct wlr_output *
             phoc_output_get_wlr_output (PhocOutput *output);
 void        phoc_output_damage_whole (PhocOutput *output);
+guint       phoc_output_get_blur_radius (PhocOutput *output);
 void        phoc_output_damage_from_view (PhocOutput *self, PhocView *view, bool whole);
 void        phoc_output_damage_whole_drag_icon (PhocOutput   *self,
                                                 PhocDragIcon *icon);

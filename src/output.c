@@ -492,6 +492,13 @@ phoc_output_draw (PhocOutput *self)
   if (G_UNLIKELY (priv->gamma_lut_changed))
     phoc_output_set_gamma_lut (self, &pending);
 
+  /* The blurred backdrop samples from the whole scene below it, so
+   * any damage invalidates the blurred content entirely */
+  if (pixman_region32_not_empty (&self->damage_ring.current) &&
+      phoc_output_get_blur_radius (self) > 0) {
+    wlr_damage_ring_add_whole (&self->damage_ring);
+  }
+
   pending.committed |= WLR_OUTPUT_STATE_DAMAGE;
   get_frame_damage (self, &pending.damage);
 
@@ -1475,6 +1482,42 @@ phoc_output_damage_whole (PhocOutput *self)
 
   wlr_damage_ring_add_whole (&self->damage_ring);
   wlr_output_schedule_frame (self->wlr_output);
+}
+
+/**
+ * phoc_output_get_blur_radius:
+ * @self: the output
+ *
+ * Get the maximum blur radius of the mapped layer surfaces with
+ * background blur on this output.
+ *
+ * Returns: The blur radius, 0 means no blur is needed
+ */
+guint
+phoc_output_get_blur_radius (PhocOutput *self)
+{
+  guint radius = 0;
+  static const enum zwlr_layer_shell_v1_layer layers[] = {
+    ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+    ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+  };
+
+  g_assert (PHOC_IS_OUTPUT (self));
+
+  for (guint i = 0; i < G_N_ELEMENTS (layers); i++) {
+    GQueue *layer_surfaces = phoc_output_get_layer_surfaces_for_layer (self, layers[i]);
+
+    for (GList *l = layer_surfaces->head; l; l = l->next) {
+      PhocLayerSurface *layer_surface = PHOC_LAYER_SURFACE (l->data);
+
+      if (!layer_surface->mapped)
+        continue;
+
+      radius = MAX (radius, phoc_layer_surface_get_blur (layer_surface));
+    }
+  }
+
+  return radius;
 }
 
 
