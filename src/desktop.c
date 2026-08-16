@@ -449,6 +449,24 @@ handle_pointer_constraint (struct wl_listener *listener, void *data)
 
 
 static void
+touch_points_changed_cb (PhocDesktop *self, const char *key, GSettings *settings)
+{
+  gboolean enable = g_settings_get_boolean (settings, key);
+  PhocOutput *output;
+
+  g_debug ("touch-points: %d", enable);
+  phoc_server_set_debug_flag (phoc_server_get_default (),
+                              PHOC_SERVER_DEBUG_FLAG_TOUCH_POINTS,
+                              enable);
+
+  /* The markers are drawn from the render pass, so nothing appears or clears
+   * until something asks for a frame. */
+  wl_list_for_each (output, &self->outputs, link)
+    phoc_output_damage_whole (output);
+}
+
+
+static void
 auto_maximize_changed_cb (PhocDesktop *self,
                           const gchar *key,
                           GSettings   *settings)
@@ -767,6 +785,9 @@ phoc_desktop_constructed (GObject *object)
                             G_CALLBACK (auto_maximize_changed_cb), self);
   auto_maximize_changed_cb (self, "auto-maximize", priv->settings);
   g_settings_bind (priv->settings, "scale-to-fit", self, "scale-to-fit", G_SETTINGS_BIND_DEFAULT);
+  g_signal_connect_swapped (priv->settings, "changed::touch-points",
+                            G_CALLBACK (touch_points_changed_cb), self);
+  touch_points_changed_cb (self, "touch-points", priv->settings);
 
   /* org.gnome.desktop.interface settings */
   priv->interface_settings = g_settings_new ("org.gnome.desktop.interface");
