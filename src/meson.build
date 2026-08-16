@@ -131,6 +131,7 @@ phoc_deps = [
   drm,
   gio,
   glesv2,
+  egl,
   gmobile_dep,
   gnome_desktop,
   gsettings_desktop_schemas_dep,
