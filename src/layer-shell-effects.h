@@ -10,6 +10,7 @@
 #include "keybindings.h"
 
 #include <phoc-layer-shell-effects-unstable-v1-protocol.h>
+#include <phoc-furios-layer-shell-effects-unstable-v1-protocol.h>
 #include "layer-shell.h"
 #include <glib-object.h>
 
@@ -28,6 +29,13 @@ typedef struct _PhocDraggableLayerSurface PhocDraggableLayerSurface;
  * A layer surface with translusency.
  */
 typedef struct _PhocAlphaLayerSurface PhocAlphaLayerSurface;
+
+/**
+ * PhocBlurLayerSurface:
+ *
+ * A layer surface with background blur.
+ */
+typedef struct _PhocBlurLayerSurface PhocBlurLayerSurface;
 
 /**
  * PhocStackedLayerSurface:
