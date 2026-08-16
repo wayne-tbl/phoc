@@ -25,6 +25,7 @@
 #include <assert.h>
 #include <drm_fourcc.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <time.h>
@@ -41,11 +42,30 @@
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/util/region.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/swapchain.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <EGL/egl.h>
 
+/* Set to 0 to build the upstream touch point markers instead of the FuriOS
+ * ones. Everything this fork changes about them is behind it. */
+#define IS_FURIOS 1
+
+#if IS_FURIOS
+#define TOUCH_POINT_SIZE 60
+#else
 #define TOUCH_POINT_SIZE 20
+#endif
 #define TOUCH_POINT_BORDER 0.1
+#if IS_FURIOS
+/* How long the marker takes to shrink from full size to its resting size, and
+ * what fraction of full size it rests at. It does not shrink to nothing: a
+ * finger held down or dragged has to stay visible, which is the whole point of
+ * the overlay during a screen recording. */
+#define TOUCH_POINT_SHRINK_MS 333
+#define TOUCH_POINT_REST 0.34
+#define TOUCH_POINT_MAX_IDS 10
+#endif
 
 #define COLOR_BLACK                ((struct wlr_render_color){0.0f, 0.0f, 0.0f, 1.0f})
 #define COLOR_TRANSPARENT          {0.0f, 0.0f, 0.0f, 0.0f}
@@ -97,6 +117,9 @@ struct touch_point_data {
   int id;
   double x;
   double y;
+#if IS_FURIOS
+  double radius;   /* in logical pixels, animated down from TOUCH_POINT_SIZE */
+#endif
 };
 
 
@@ -189,6 +212,46 @@ render_texture (PhocOutput               *output,
   pixman_region32_fini (&damage);
 }
 
+#if IS_FURIOS
+/*
+ * The size of a touch marker, shrinking from full to its resting size over
+ * TOUCH_POINT_SHRINK_MS from the moment the finger went down.
+ *
+ * The start times are kept here rather than on the touch point, because the
+ * points are rebuilt from the seat every frame and carry no history. An id that
+ * has not been seen for a frame is treated as a new touch, which is what makes
+ * a second tap animate again rather than staying at its resting size.
+ */
+static gint64 touch_point_started[TOUCH_POINT_MAX_IDS];
+static gint64 touch_point_last_seen[TOUCH_POINT_MAX_IDS];
+
+static double
+touch_point_radius (int id)
+{
+  gint64 now = g_get_monotonic_time ();
+  double age_ms, t;
+
+  if (id < 0 || id >= TOUCH_POINT_MAX_IDS)
+    id = 0;
+
+  /* A gap of more than a couple of frames means the finger was lifted and this
+   * is a new touch, not the same one continuing. */
+  if (now - touch_point_last_seen[id] > 100 * G_TIME_SPAN_MILLISECOND)
+    touch_point_started[id] = now;
+
+  touch_point_last_seen[id] = now;
+
+  age_ms = (now - touch_point_started[id]) / (double) G_TIME_SPAN_MILLISECOND;
+  t = CLAMP (age_ms / TOUCH_POINT_SHRINK_MS, 0.0, 1.0);
+  /* Ease out, so it drops away quickly and settles gently */
+  t = 1.0 - (1.0 - t) * (1.0 - t);
+
+  return TOUCH_POINT_SIZE * (1.0 - t * (1.0 - TOUCH_POINT_REST));
+}
+#endif
+
+
+
 static void
 collect_touch_points (PhocOutput *output, struct wlr_surface *surface, struct wlr_box box, float scale)
 {
@@ -211,6 +274,9 @@ collect_touch_points (PhocOutput *output, struct wlr_surface *surface, struct wl
 
       touch_point = g_new (struct touch_point_data, 1);
       touch_point->id = point->touch_id;
+#if IS_FURIOS
+      touch_point->radius = touch_point_radius (point->touch_id);
+#endif
       touch_point->x = box.x + point->sx * output->wlr_output->scale * scale;
       touch_point->y = box.y + point->sy * output->wlr_output->scale * scale;
       output->debug_touch_points = g_list_append (output->debug_touch_points, touch_point);
@@ -317,6 +383,8 @@ render_drag_icons (PhocInput *input, PhocRenderContext *ctx)
 }
 
 
+#if !IS_FURIOS
+
 static void
 color_hsv_to_rgb (struct wlr_render_color *color)
 {
@@ -344,6 +412,9 @@ color_hsv_to_rgb (struct wlr_render_color *color)
 }
 
 
+#endif
+
+
 static struct wlr_box
 phoc_box_from_touch_point (struct touch_point_data *touch_point, int width, int height)
 {
@@ -354,6 +425,69 @@ phoc_box_from_touch_point (struct touch_point_data *touch_point, int width, int 
     .height = height
   };
 }
+
+#if IS_FURIOS
+/*
+ * Draw a filled circle out of horizontal slices.
+ *
+ * The render pass can only add rectangles, and a couple of dozen slices is
+ * indistinguishable from a circle at this size while staying inside the
+ * existing pass -- no shader, no GL state to save and restore.
+ */
+static void
+render_disc (PhocRenderContext *ctx, double cx, double cy, double radius, struct wlr_render_color color)
+{
+  int steps = CLAMP ((int) (radius / 1.5), 6, 28);
+
+  for (int i = 0; i < steps; i++) {
+    /* Sample each slice at its centre, so the top and bottom do not flatten */
+    double t0 = (i + 0.5) / steps;
+    double dy = (t0 * 2.0 - 1.0) * radius;
+    double half_w = sqrt (MAX (radius * radius - dy * dy, 0.0));
+    double y0 = cy - radius + (i / (double) steps) * radius * 2.0;
+    double h = (radius * 2.0) / steps;
+    struct wlr_box box;
+
+    if (half_w < 0.5)
+      continue;
+
+    box = (struct wlr_box) {
+      .x = round (cx - half_w),
+      .y = round (y0),
+      .width = MAX (1, (int) round (half_w * 2.0)),
+      .height = MAX (1, (int) ceil (h)),
+    };
+    phoc_output_transform_box (ctx->output, &box);
+    wlr_render_pass_add_rect (ctx->render_pass, &(struct wlr_render_rect_options){
+        .box = box,
+        .color = color,
+      });
+  }
+}
+
+
+static void
+render_touch_point_cb (gpointer data, gpointer user_data)
+{
+  struct touch_point_data *touch_point = data;
+  PhocRenderContext *ctx = user_data;
+  struct wlr_output *wlr_output = ctx->output->wlr_output;
+  /* Blue, and the same blue for every finger: this marks where the screen was
+   * touched, it is not trying to tell one finger from another. */
+  struct wlr_render_color color = {0.21f, 0.52f, 0.89f, 0.55f};
+  struct wlr_render_color core = {0.85f, 0.92f, 1.0f, 0.75f};
+  double radius = touch_point->radius * wlr_output->scale / 2.0;
+
+  if (radius < 1.0)
+    return;
+
+  render_disc (ctx, touch_point->x, touch_point->y, radius, color);
+  /* A small bright centre so the exact point stays readable once the ring has
+   * shrunk, and while it is over a busy wallpaper. */
+  render_disc (ctx, touch_point->x, touch_point->y, radius * 0.3, core);
+}
+
+#else
 
 static void
 render_touch_point_cb (gpointer data, gpointer user_data)
@@ -396,6 +530,8 @@ render_touch_point_cb (gpointer data, gpointer user_data)
       .color = color,
     });
 }
+
+#endif
 
 static void
 render_touch_points (PhocRenderContext *ctx)
