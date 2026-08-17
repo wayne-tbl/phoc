@@ -38,6 +38,7 @@
 #include "idle-inhibit.h"
 #include "layer-shell.h"
 #include "output.h"
+#include "render.h"
 #include "seat.h"
 #include "server.h"
 #include "color-rect.h"
@@ -449,6 +450,23 @@ handle_pointer_constraint (struct wl_listener *listener, void *data)
 
 
 static void
+blur_changed_cb (PhocDesktop *self, const char *key, GSettings *settings)
+{
+  gboolean enable = g_settings_get_boolean (settings, key);
+  PhocOutput *output;
+
+  g_debug ("blur: %d", enable);
+  phoc_renderer_set_blur_enabled (phoc_server_get_renderer (phoc_server_get_default ()),
+                                  enable);
+
+  /* The backdrop is captured from the render pass, so nothing frosts or
+   * clears until something asks for a frame. */
+  wl_list_for_each (output, &self->outputs, link)
+    phoc_output_damage_whole (output);
+}
+
+
+static void
 auto_maximize_changed_cb (PhocDesktop *self,
                           const gchar *key,
                           GSettings   *settings)
@@ -767,6 +785,9 @@ phoc_desktop_constructed (GObject *object)
                             G_CALLBACK (auto_maximize_changed_cb), self);
   auto_maximize_changed_cb (self, "auto-maximize", priv->settings);
   g_settings_bind (priv->settings, "scale-to-fit", self, "scale-to-fit", G_SETTINGS_BIND_DEFAULT);
+  g_signal_connect_swapped (priv->settings, "changed::blur",
+                            G_CALLBACK (blur_changed_cb), self);
+  blur_changed_cb (self, "blur", priv->settings);
 
   /* org.gnome.desktop.interface settings */
   priv->interface_settings = g_settings_new ("org.gnome.desktop.interface");

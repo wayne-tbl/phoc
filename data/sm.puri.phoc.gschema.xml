@@ -9,6 +9,19 @@
         Wayland applications and only their main window.
       </description>
     </key>
+    <key name="blur" type="b">
+      <default>true</default>
+      <summary>Blur the backdrop of surfaces that ask for it</summary>
+      <description>
+        Whether to blur what is behind a surface that requested background
+        blur over the layer shell effects protocol, and behind a translucent
+        window. Switching this off leaves those surfaces plainly translucent.
+        Read at startup and followed while the compositor runs, so a device
+        whose GL path misbehaves can turn the effect off without downgrading
+        the compositor.
+      </description>
+    </key>
+
     <key name="scale-to-fit" type="b">
       <default>false</default>
       <summary>Enable automatic scaling of all oversized windows</summary>

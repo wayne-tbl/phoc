@@ -110,6 +110,8 @@ struct _PhocRenderer {
   struct wlr_renderer  *wlr_renderer;
   struct wlr_allocator *wlr_allocator;
 
+  /* Whether blur is wanted at all, from the `blur` gsetting */
+  gboolean              blur_enabled;
   /* Blur state per output */
   GHashTable           *blur_states;
   /* The two halves of the dual filter, plus the final composite which is the
@@ -1052,13 +1054,34 @@ blur_prog_get (PhocRenderer *self)
  *
  * A surface is only blurred when it asks to be, over the layer shell effects
  * protocol, so that request is the opt in.
+ *
+ * The `blur` gsetting switches the whole effect off on top of that.
  */
 static gboolean
 phoc_renderer_blur_enabled (PhocRenderer *self)
 {
+  if (!self->blur_enabled)
+    return FALSE;
+
   /* The blur is implemented on raw GL objects, so it needs a GL renderer */
   return wlr_renderer_is_android (self->wlr_renderer) ||
          wlr_renderer_is_gles2 (self->wlr_renderer);
+}
+
+/**
+ * phoc_renderer_set_blur_enabled:
+ * @self: The renderer
+ * @enabled: Whether to blur at all
+ *
+ * Set whether surfaces that ask for background blur get it. Nothing changes
+ * on screen until a frame is asked for; the caller damages the outputs.
+ */
+void
+phoc_renderer_set_blur_enabled (PhocRenderer *self, gboolean enabled)
+{
+  g_return_if_fail (PHOC_IS_RENDERER (self));
+
+  self->blur_enabled = enabled;
 }
 
 
@@ -1608,6 +1631,7 @@ phoc_renderer_class_init (PhocRendererClass *klass)
 static void
 phoc_renderer_init (PhocRenderer *self)
 {
+  self->blur_enabled = TRUE;
   self->blur_states = g_hash_table_new_full (g_direct_hash, g_direct_equal,
                                              NULL, (GDestroyNotify) blur_state_free);
 }
